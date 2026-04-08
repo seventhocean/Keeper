@@ -1,5 +1,6 @@
 """Agent 核心 - 意图处理和任务分发"""
 from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
 from .context import ContextManager, MemoryManager, AgentState
 from ..nlu.base import NLUEngine, ParsedIntent, IntentType
 from ..nlu.langchain_engine import LangChainEngine
@@ -7,6 +8,15 @@ from ..config import AppConfig
 from ..tools.server import ServerTools, format_status_report
 from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
 from ..tools.ssh import SSHTools, SSHConfig
+
+
+@dataclass
+class PendingTask:
+    """待确认任务"""
+    task_type: str  # "install", "scan" 等
+    package: Optional[str] = None
+    host: Optional[str] = None
+    message: Optional[str] = None
 
 
 class Agent:
@@ -17,6 +27,7 @@ class Agent:
         self.config = config or AppConfig.from_env()
         self.state = AgentState()
         self.state.is_running = True
+        self.pending_task: Optional[PendingTask] = None
 
     def process(self, user_input: str) -> str:
         """处理用户输入
@@ -69,6 +80,10 @@ class Agent:
 
     def _dispatch(self, parsed: ParsedIntent) -> str:
         """意图分发"""
+        # 优先处理确认任务
+        if parsed.intent == IntentType.CONFIRM and self.pending_task:
+            return self._handle_confirm(parsed.entities)
+
         handlers = {
             IntentType.INSPECT: self._handle_inspect,
             IntentType.SCAN: self._handle_scan,
@@ -76,6 +91,7 @@ class Agent:
             IntentType.LOGS: self._handle_logs,
             IntentType.HELP: self._handle_help,
             IntentType.INSTALL: self._handle_install,
+            IntentType.CONFIRM: self._handle_confirm_no_task,
             IntentType.CHAT: self._handle_chat,
             IntentType.UNKNOWN: self._handle_unknown,
         }
@@ -128,6 +144,12 @@ class Agent:
 
             return report
         except NmapNotInstalledError:
+            # 设置待确认安装任务
+            self.pending_task = PendingTask(
+                task_type="install",
+                package="nmap",
+                host="localhost",
+            )
             return NmapNotInstalledError.get_help_message()
         except RuntimeError as e:
             return f"[扫描] {str(e)}"
@@ -142,19 +164,79 @@ class Agent:
         host = entities.get("host")
 
         if not host:
-            # 本地安装
+            # 本地安装 - 设置待确认任务
             cmd = NmapNotInstalledError.get_install_command()
-            return f"""[安装] 请在本地执行以下命令安装 {package}:
-
-  {cmd}
-
-或者在云主机上安装，请提供主机地址，例如:
-  "在 192.168.1.100 上安装 nmap"
-  "帮我远程安装 nmap 到生产服务器"
-"""
+            self.pending_task = PendingTask(
+                task_type="install",
+                package=package,
+                host="localhost",
+                message=f"请在本地执行以下命令安装 {package}:\n\n  {cmd}\n\n或者我可以帮你自动安装，输入 'yes' 或 '好的' 确认执行。"
+            )
+            return self.pending_task.message
         else:
             # 远程安装
             return self._remote_install(host, package)
+
+    def _handle_confirm(self, entities: Dict[str, Any]) -> str:
+        """处理确认执行任务"""
+        if not self.pending_task:
+            return "[系统] 当前没有待确认的任务。"
+
+        task = self.pending_task
+        self.pending_task = None  # 清除待办任务
+
+        if task.task_type == "install":
+            return self._execute_install(task.package, task.host)
+        elif task.task_type == "scan":
+            return self._execute_scan(task.host)
+
+        return "[系统] 未知任务类型。"
+
+    def _handle_confirm_no_task(self, entities: Dict[str, Any]) -> str:
+        """处理确认但没有待办任务"""
+        return "[系统] 当前没有待确认的任务。您可以尝试：\n  - '扫描漏洞'\n  - '检查 192.168.1.100'\n  - '帮助'"
+
+    def _execute_install(self, package: str, host: str) -> str:
+        """执行安装（本地）"""
+        import subprocess
+
+        lines = [f"[安装] 正在安装 {package}..."]
+        lines.append("")
+
+        # 获取安装命令
+        install_cmd = NmapNotInstalledError.get_install_command()
+
+        # 执行安装
+        try:
+            # 使用 subprocess 执行并显示输出
+            result = subprocess.run(
+                install_cmd,
+                shell=True,
+                capture_output=True,
+                text=True,
+                timeout=120,
+            )
+
+            if result.returncode == 0:
+                lines.append(f"[✓] {package} 已在 {host} 上成功安装")
+                # 只显示最后几行
+                output_lines = (result.stdout or "").strip().split("\n")
+                lines.extend(output_lines[-10:])
+                return "\n".join(lines)
+            else:
+                lines.append(f"[✗] {package} 安装失败")
+                lines.append("")
+                lines.append(result.stderr or result.stdout)
+                return "\n".join(lines)
+
+        except subprocess.TimeoutExpired:
+            return f"[安装] ✗ 安装超时，请手动执行：{install_cmd}"
+        except Exception as e:
+            return f"[安装] ✗ 安装失败：{str(e)}"
+
+    def _execute_scan(self, host: str) -> str:
+        """执行扫描"""
+        return self._handle_scan({"host": host})
 
     def _remote_install(self, host: str, package: str) -> str:
         """远程安装软件"""

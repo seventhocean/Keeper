@@ -31,6 +31,7 @@ class LangChainEngine(NLUEngine):
 - logs: 日志查询
 - help: 帮助
 - install: 安装软件（如"安装 nmap"、"帮我安装漏洞扫描工具"）
+- confirm: 确认执行（如"yes"、"y"、"好的"、"确认"、"执行"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
@@ -54,6 +55,8 @@ class LangChainEngine(NLUEngine):
 用户："CPU 使用率高怎么办" → is_task=false, direct_response=CPU 使用率高的处理建议..., confidence=0.9
 用户："安装 nmap" → is_task=true, intent=install, entities=package=nmap, confidence=0.95
 用户："在 192.168.1.100 上安装 nmap" → is_task=true, intent=install, entities=package=nmap, host=192.168.1.100
+用户："yes" → is_task=true, intent=confirm, confidence=0.95
+用户："好的" → is_task=true, intent=confirm, confidence=0.95
 """
 
     def __init__(
@@ -145,6 +148,7 @@ class LangChainEngine(NLUEngine):
                 "logs": IntentType.LOGS,
                 "help": IntentType.HELP,
                 "install": IntentType.INSTALL,
+                "confirm": IntentType.CONFIRM,
                 "chat": IntentType.CHAT,
             }
 

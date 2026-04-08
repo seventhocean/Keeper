@@ -32,12 +32,12 @@ class NmapNotInstalledError(Exception):
     """Nmap 未安装异常"""
 
     INSTALL_COMMANDS = {
-        "ubuntu": "sudo apt-get install nmap",
-        "debian": "sudo apt-get install nmap",
-        "centos": "sudo yum install nmap",
-        "rhel": "sudo yum install nmap",
-        "fedora": "sudo dnf install nmap",
-        "arch": "sudo pacman -S nmap",
+        "ubuntu": "sudo apt-get install -y nmap",
+        "debian": "sudo apt-get install -y nmap",
+        "centos": "sudo yum install -y nmap",
+        "rhel": "sudo yum install -y nmap",
+        "fedora": "sudo dnf install -y nmap",
+        "arch": "sudo pacman -S --noconfirm nmap",
         "macos": "brew install nmap",
     }
 
@@ -86,7 +86,7 @@ class NmapNotInstalledError(Exception):
 安装建议:
   {cmd}
 
-需要我帮你安装吗？输入 "yes" 或 "y" 执行安装"""
+输入 "yes" 或 "y" 自动安装"""
 
 
 class ScannerTools:
