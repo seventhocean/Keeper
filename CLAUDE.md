@@ -111,3 +111,34 @@ keeper config clear
 3. **LLM 依赖：** 需要有效的 API Key 才能测试 NLU 功能
 4. **本地采集：** `ServerTools.inspect_server("localhost")` 无需远程连接
 5. **Nmap 依赖：** 漏洞扫描需要系统安装 `nmap` 包
+
+## 待实现功能
+
+### Phase 2 - 增强功能
+- [ ] 报告生成 (JSON/HTML)
+- [ ] 多主机批量巡检
+- [ ] SSH 远程采集
+- [ ] 审计日志
+- [ ] 系统日志查询 (journalctl, /var/log)
+- [ ] 容器日志查询
+
+### Phase 3 - K8s 集群巡检 (自建单集群)
+- [ ] K8s 客户端封装 (kubernetes Python SDK)
+- [ ] Node/Pod/Deployment 状态检查
+- [ ] ConfigMap/Secret/PVC 巡检
+- [ ] Namespace 资源配额监控
+- [ ] 异常 Pod 检测 (Pending/Failed/CrashLoopBackOff)
+- [ ] Service/Ingress 配置检查
+- [ ] 存储状态检查 (PVC/PV)
+
+### Phase 4 - 智能分析与变更
+- [ ] 根因分析 (RCA)
+- [ ] 告警分析
+- [ ] 自动修复建议
+- [ ] 变更管理 (扩缩容/重启)
+
+### Phase 5 - 安全与集成
+- [ ] 安全基线检查
+- [ ] 操作审计报表
+- [ ] 告警集成 (Prometheus)
+- [ ] IM 通知集成

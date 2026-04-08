@@ -396,17 +396,39 @@ profiles:
 - [x] 对话记忆系统
 - [x] 配置管理（分离敏感信息）
 - [x] 单元测试
+- [x] 漏洞扫描集成 (Nmap)
 
-### Phase 2
-- [ ] 漏洞扫描集成 (Nmap)
+### Phase 2 - 增强功能
 - [ ] 报告生成 (JSON/HTML)
 - [ ] 多主机批量巡检
 - [ ] SSH 远程采集
+- [ ] 审计日志 (audit.log)
+- [ ] 系统日志查询 (journalctl, /var/log)
+- [ ] 容器日志查询 (docker logs, kubectl logs)
 
-### Phase 3
+### Phase 3 - K8s 集群巡检 (自建单集群)
+- [ ] K8s 客户端封装 (kubernetes Python SDK)
+- [ ] Node 状态检查 (Ready/资源使用/kubelet 健康)
+- [ ] Pod 状态巡检 (Running/Pending/Failed/重启次数)
+- [ ] Deployment/StatefulSet/DaemonSet 状态
+- [ ] ConfigMap/Secret 资源巡检
+- [ ] PVC/PV 存储状态检查
+- [ ] Namespace 资源配额监控
+- [ ] Service/Ingress 配置检查
+- [ ] 异常 Pod 检测 (CrashLoopBackOff/OOMKilled)
+
+### Phase 4 - 智能分析与变更
+- [ ] 根因分析 (RCA) - 进程级/依赖链分析
 - [ ] 智能告警分析
 - [ ] 自动修复建议
+- [ ] 变更管理 (Deployment 扩缩容/重启)
 - [ ] 更多 LLM 提供商支持
+
+### Phase 5 - 安全与集成
+- [ ] 安全基线检查 (弱密码/端口暴露/证书过期)
+- [ ] 操作审计报表
+- [ ] 告警集成 (Prometheus Alertmanager)
+- [ ] IM 通知 (钉钉/企微/飞书)
 
 ---
 
