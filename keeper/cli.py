@@ -254,7 +254,6 @@ def init():
 
     click.echo(click.style("✓ 配置文件已创建:", fg='green'))
     click.echo(f"  {config.config_file}")
-    click.echo(f"  {config.llm_config_file}")
     click.echo("\n使用 'keeper config set' 命令配置 API Key。")
 
 
