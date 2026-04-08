@@ -24,12 +24,12 @@ class LLMConfig:
         )
 
     def to_dict(self) -> Dict[str, Any]:
-        """转换为字典（用于保存，api_key 脱敏）"""
+        """转换为字典（用于保存）"""
         return {
             "provider": self.provider,
+            "api_key": self.api_key,
             "base_url": self.base_url,
             "model": self.model,
-            # api_key 不序列化到配置文件
         }
 
     def is_configured(self) -> bool:
@@ -45,7 +45,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     profiles: Dict[str, Any] = field(default_factory=dict)
     _config_dir: Optional[Path] = field(default=None, repr=False)
-    _llm_config_file: Optional[Path] = field(default=None, repr=False)
+    _config_file: Optional[Path] = field(default=None, repr=False)
 
     @classmethod
     def from_env(cls) -> "AppConfig":
@@ -64,41 +64,27 @@ class AppConfig:
 
     @property
     def config_file(self) -> Path:
-        """主配置文件路径"""
-        return self.config_dir / "config.yaml"
-
-    @property
-    def llm_config_file(self) -> Path:
-        """LLM 配置文件路径（敏感信息）"""
-        if self._llm_config_file is None:
-            self._llm_config_file = self.config_dir / "llm_config.yaml"
-        return self._llm_config_file
+        """配置文件路径"""
+        if self._config_file is None:
+            self._config_file = self.config_dir / "config.yaml"
+        return self._config_file
 
     def load(self) -> None:
         """从配置文件加载"""
         import yaml
 
-        # 加载主配置
         if self.config_file.exists():
             with open(self.config_file) as f:
                 data = yaml.safe_load(f)
                 if data:
                     self.current_profile = data.get("current_profile", "default")
                     self.profiles = data.get("profiles", {})
-
-        # 加载 LLM 配置（敏感信息）
-        if self.llm_config_file.exists():
-            with open(self.llm_config_file) as f:
-                data = yaml.safe_load(f)
-                if data:
-                    self.llm.provider = data.get("provider", self.llm.provider)
-                    self.llm.base_url = data.get("base_url", self.llm.base_url)
-                    self.llm.model = data.get("model", self.llm.model)
-
-        # 从独立文件加载 API Key
-        api_key = self.load_api_key()
-        if api_key:
-            self.llm.api_key = api_key
+                    llm_data = data.get("llm", {})
+                    if llm_data:
+                        self.llm.provider = llm_data.get("provider", self.llm.provider)
+                        self.llm.api_key = llm_data.get("api_key", self.llm.api_key)
+                        self.llm.base_url = llm_data.get("base_url", self.llm.base_url)
+                        self.llm.model = llm_data.get("model", self.llm.model)
 
     def save(self) -> None:
         """保存配置到文件"""
@@ -106,29 +92,13 @@ class AppConfig:
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
-        # 保存主配置（不含敏感信息）
+        # 保存所有配置到一个文件
         with open(self.config_file, "w") as f:
             yaml.safe_dump({
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
+                "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
-
-        # 保存 LLM 配置（敏感信息，单独文件）
-        with open(self.llm_config_file, "w") as f:
-            yaml.safe_dump({
-                "provider": self.llm.provider,
-                "base_url": self.llm.base_url,
-                "model": self.llm.model,
-                # api_key 保存到单独文件
-            }, f, default_flow_style=False, allow_unicode=True)
-
-        # api_key 保存到独立文件（权限限制）
-        if self.llm.api_key:
-            api_key_file = self.config_dir / "api_key"
-            with open(api_key_file, "w") as f:
-                f.write(self.llm.api_key)
-            # 设置文件权限为仅所有者可读写
-            os.chmod(api_key_file, 0o600)
 
     def save_llm_config(self, api_key: Optional[str] = None) -> None:
         """保存 LLM 配置"""
@@ -139,28 +109,17 @@ class AppConfig:
         if api_key is not None:
             self.llm.api_key = api_key
 
-        # 保存 LLM 配置
-        with open(self.llm_config_file, "w") as f:
+        # 保存配置
+        with open(self.config_file, "w") as f:
             yaml.safe_dump({
-                "provider": self.llm.provider,
-                "base_url": self.llm.base_url,
-                "model": self.llm.model,
+                "current_profile": self.current_profile,
+                "profiles": self.profiles,
+                "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
 
-        # api_key 保存到独立文件（权限限制）
-        if self.llm.api_key:
-            api_key_file = self.config_dir / "api_key"
-            with open(api_key_file, "w") as f:
-                f.write(self.llm.api_key)
-            os.chmod(api_key_file, 0o600)
-
-    def load_api_key(self) -> Optional[str]:
-        """从独立文件加载 API Key"""
-        api_key_file = self.config_dir / "api_key"
-        if api_key_file.exists():
-            with open(api_key_file) as f:
-                return f.read().strip()
-        return None
+    def is_llm_configured(self) -> bool:
+        """检查 LLM 是否已配置"""
+        return self.llm.is_configured()
 
     def get_profile(self, name: Optional[str] = None) -> Dict[str, Any]:
         """获取指定环境配置"""
@@ -178,10 +137,3 @@ class AppConfig:
         thresholds = profile_config.get("thresholds", {})
         defaults = {"cpu": 80, "memory": 85, "disk": 90}
         return thresholds.get(metric, defaults.get(metric, 80))
-
-    def is_llm_configured(self) -> bool:
-        """检查 LLM 是否已配置"""
-        # 先尝试从文件加载
-        if not self.llm.api_key:
-            self.llm.api_key = self.load_api_key()
-        return self.llm.is_configured()

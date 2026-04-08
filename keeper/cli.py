@@ -162,7 +162,6 @@ def status():
     click.echo("Keeper 状态")
     click.echo("━" * 40)
     click.echo(f"配置文件：{config.config_file}")
-    click.echo(f"LLM 配置：{config.llm_config_file}")
     click.echo(f"当前环境：{config.current_profile}")
     click.echo(f"LLM Provider: {config.llm.provider}")
     click.echo(f"Model: {config.llm.model}")
