@@ -59,7 +59,7 @@ keeper config show
 ### 5. 启动 Agent
 
 ```bash
-keeper chat
+keeper
 ```
 
 进入交互式对话模式，支持自然语言交流：
@@ -186,7 +186,8 @@ keeper> 显示当前配置
 ### 交互模式
 
 ```bash
-keeper chat       # 启动交互式对话
+keeper          # 直接启动交互式对话
+keeper chat     # 也可使用此命令（向后兼容）
 ```
 
 ### 单命令模式

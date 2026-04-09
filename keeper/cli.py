@@ -49,15 +49,17 @@ def create_agent(config: AppConfig) -> Agent:
     return Agent(nlu_engine=engine, config=config)
 
 
-@click.group()
+@click.group(invoke_without_command=True)
 @click.version_option(version='0.1.0')
-def cli():
+@click.pass_context
+def cli(ctx):
     """Keeper - 智能运维助手"""
-    pass
+    if ctx.invoked_subcommand is None:
+        # 没有子命令时，启动交互模式
+        start_chat()
 
 
-@cli.command()
-def chat():
+def start_chat():
     """启动交互式对话模式"""
     # 加载配置
     config = AppConfig.from_env()
@@ -109,6 +111,12 @@ def chat():
             break
         except Exception as e:
             click.echo(click.style(f"[错误] {e}\n", fg='red'))
+
+
+@cli.command()
+def chat():
+    """启动交互式对话模式"""
+    start_chat()
 
 
 @cli.command(context_settings={'ignore_unknown_options': True})
@@ -223,6 +231,83 @@ def status():
         click.echo(f"API Key: {key_preview} ✓")
     else:
         click.echo(click.style("API Key: 未设置 ✗", fg='red'))
+
+
+@cli.command()
+@click.option('--hours', '-h', default=24, type=int, help='查询最近 N 小时的记录')
+@click.option('--host', type=str, help='按主机过滤')
+@click.option('--intent', type=str, help='按意图类型过滤 (inspect, scan, config 等)')
+@click.option('--json', 'as_json', is_flag=True, help='以 JSON 格式输出')
+def logs(hours, host, intent, as_json):
+    """查看审计日志
+
+    示例:
+        keeper logs --hours 24
+        keeper logs --host 192.168.1.100
+        keeper logs --intent inspect
+        keeper logs --json
+    """
+    from keeper.core.agent import Agent
+    from keeper.nlu.langchain_engine import LangChainEngine, LLMProvider
+
+    # 加载配置
+    config = AppConfig.from_env()
+    config.load()
+
+    # 检查 API Key
+    if not config.is_llm_configured():
+        click.echo(click.style("[错误] 请配置 API Key:", fg='red'))
+        click.echo("  使用：keeper config set --api-key YOUR_API_KEY")
+        sys.exit(1)
+
+    # 创建 Agent（用于获取审计日志）
+    provider_map = {
+        "openai_compatible": LLMProvider.OPENAI_COMPATIBLE,
+        "anthropic": LLMProvider.ANTHROPIC,
+    }
+    provider = provider_map.get(config.llm.provider, LLMProvider.OPENAI_COMPATIBLE)
+    engine = LangChainEngine(
+        provider=provider,
+        api_key=config.llm.api_key,
+        base_url=config.llm.base_url,
+        model=config.llm.model,
+    )
+    engine.load()
+    agent = Agent(nlu_engine=engine, config=config)
+
+    # 查询审计日志
+    records = agent.audit.get_history(hours=hours, limit=100, host=host, intent=intent)
+
+    if not records:
+        click.echo(f"[日志] 过去 {hours} 小时内没有找到操作记录")
+        return
+
+    if as_json:
+        import json
+        output = []
+        for record in records:
+            output.append({
+                "timestamp": record.timestamp,
+                "intent": record.intent,
+                "host": record.host,
+                "result": record.result,
+                "response_time_ms": record.response_time_ms,
+            })
+        click.echo(json.dumps(output, indent=2, ensure_ascii=False))
+    else:
+        # 格式化输出
+        lines = [f"[日志] 过去 {hours} 小时的操作记录:"]
+        lines.append("━" * 60)
+        for i, record in enumerate(records, 1):
+            time_str = record.timestamp[11:19]  # 提取 HH:MM:SS
+            result_icon = "✓" if record.result == "success" else "✗"
+            host_str = f" ({record.host})" if record.host else ""
+            lines.append(f"  {i}. [{time_str}] {result_icon} {record.intent}{host_str} ({record.response_time_ms}ms)")
+
+        lines.append("━" * 60)
+        lines.append(f"共 {len(records)} 条记录")
+
+        click.echo("\n".join(lines))
 
 
 @cli.command()

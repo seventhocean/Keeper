@@ -28,10 +28,11 @@ class LangChainEngine(NLUEngine):
 - inspect: 服务器资源巡检
 - scan: 漏洞扫描
 - config: 配置管理（查看或修改配置）
-- logs: 日志查询
+- logs: 日志查询（查看操作记录、审计日志、历史查询）
 - help: 帮助
 - install: 安装软件（如"安装 nmap"、"帮我安装漏洞扫描工具"）
 - confirm: 确认执行（如"yes"、"y"、"好的"、"确认"、"执行"）
+- export: 导出报告（如"导出为 JSON"、"生成 HTML 报告"、"保存巡检结果"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
@@ -43,6 +44,16 @@ class LangChainEngine(NLUEngine):
 - action: 动作（set, get, show, update）
 - time: 时间范围
 - all_hosts: 布尔值，当用户说"所有主机"、"批量巡检"、"全部检查"时为 true
+- hours: 小时数（日志查询时使用，如"过去 24 小时"）
+- query: 搜索关键词
+- intent_type: 意图类型过滤（如"查看巡检记录"中的"巡检"）
+- format: 导出格式（json, html, markdown）
+- log_source: 日志来源（audit, system, docker, file）
+- unit: systemd 服务名称（如 nginx, docker）
+- container: 容器名称
+- path: 文件路径
+- lines: 日志行数
+- since: 时间范围
 
 直接回复规则（仅 is_task=false 时填写）：
 - 友好、简洁
@@ -63,6 +74,17 @@ class LangChainEngine(NLUEngine):
 用户："批量巡检所有主机" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.95
 用户："检查所有机器" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.95
 用户："看看 /etc/hosts 里的所有主机" → is_task=true, intent=inspect, entities={{"all_hosts":true}}, confidence=0.9
+用户："查看最近的操作记录" → is_task=true, intent=logs, confidence=0.9
+用户："过去 24 小时做了什么？" → is_task=true, intent=logs, entities={{"hours":24}}, confidence=0.9
+用户："查看对 192.168.1.100 的操作" → is_task=true, intent=logs, entities={{"host":"192.168.1.100"}}, confidence=0.9
+用户："显示最近的巡检记录" → is_task=true, intent=logs, entities={{"intent_type":"inspect"}}, confidence=0.9
+用户："导出为 JSON" → is_task=true, intent=export, entities={{"format":"json"}}, confidence=0.95
+用户："生成 HTML 报告" → is_task=true, intent=export, entities={{"format":"html"}}, confidence=0.95
+用户："保存巡检结果为 Markdown" → is_task=true, intent=export, entities={{"format":"markdown"}}, confidence=0.9
+用户："查看系统日志" → is_task=true, intent=logs, entities={{"log_source":"system"}}, confidence=0.9
+用户："查看 Nginx 的访问日志" → is_task=true, intent=logs, entities={{"log_source":"system","unit":"nginx"}}, confidence=0.9
+用户："查看 nginx 容器日志" → is_task=true, intent=logs, entities={{"log_source":"docker","container":"nginx"}}, confidence=0.9
+用户："查看 /var/log/syslog 最后 100 行" → is_task=true, intent=logs, entities={{"log_source":"file","path":"/var/log/syslog","lines":100}}, confidence=0.9
 """
 
     def __init__(
@@ -155,6 +177,7 @@ class LangChainEngine(NLUEngine):
                 "help": IntentType.HELP,
                 "install": IntentType.INSTALL,
                 "confirm": IntentType.CONFIRM,
+                "export": IntentType.EXPORT,
                 "chat": IntentType.CHAT,
             }
 

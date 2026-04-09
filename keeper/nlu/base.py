@@ -15,6 +15,7 @@ class IntentType(str, Enum):
     INSTALL = "install"      # 安装软件
     CONFIRM = "confirm"      # 确认执行
     CHAT = "chat"            # 闲聊/知识问答（非任务）
+    EXPORT = "export"        # 导出报告
     UNKNOWN = "unknown"      # 未知意图
 
 

@@ -1,7 +1,9 @@
 """Agent 核心 - 意图处理和任务分发"""
+import time
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from .context import ContextManager, MemoryManager, AgentState
+from .audit import AuditLogger
 from ..nlu.base import NLUEngine, ParsedIntent, IntentType
 from ..nlu.langchain_engine import LangChainEngine
 from ..config import AppConfig
@@ -28,6 +30,7 @@ class Agent:
         self.state = AgentState()
         self.state.is_running = True
         self.pending_task: Optional[PendingTask] = None
+        self.audit = AuditLogger()  # 审计日志记录器
 
     def process(self, user_input: str) -> str:
         """处理用户输入
@@ -38,6 +41,8 @@ class Agent:
         Returns:
             str: Agent 回复
         """
+        start_time = time.time()
+
         # 1. NLU 解析
         context_dict = {
             "last_host": self.state.context.current_host,
@@ -48,6 +53,15 @@ class Agent:
         parsed = self.nlu.parse(user_input, context=context_dict)
 
         if parsed.error_message:
+            # 记录审计日志
+            response_time = int((time.time() - start_time) * 1000)
+            self.audit.log_turn(
+                intent="unknown",
+                entities={},
+                result="error",
+                response_time_ms=response_time,
+                error_message=parsed.error_message,
+            )
             return f"[错误] NLU 解析失败：{parsed.error_message}"
 
         # 2. 如果不是任务，直接返回直接回复
@@ -59,6 +73,14 @@ class Agent:
                 agent_response=response,
                 intent="chat",
                 entities={},
+            )
+            # 记录审计日志
+            response_time = int((time.time() - start_time) * 1000)
+            self.audit.log_turn(
+                intent="chat",
+                entities={},
+                result="success",
+                response_time_ms=response_time,
             )
             return response
 
@@ -74,6 +96,18 @@ class Agent:
             agent_response=response,
             intent=parsed.intent.value,
             entities=parsed.entities,
+        )
+
+        # 6. 记录审计日志
+        response_time = int((time.time() - start_time) * 1000)
+        is_error = response.startswith("[错误]") or response.startswith("[扫描] 扫描失败") or response.startswith("[巡检] 检查失败")
+        self.audit.log_turn(
+            intent=parsed.intent.value,
+            entities=parsed.entities,
+            result="error" if is_error else "success",
+            response_time_ms=response_time,
+            host=parsed.entities.get("host"),
+            error_message=response if is_error else None,
         )
 
         return response
@@ -93,6 +127,7 @@ class Agent:
             IntentType.INSTALL: self._handle_install,
             IntentType.CONFIRM: self._handle_confirm_no_task,
             IntentType.CHAT: self._handle_chat,
+            IntentType.EXPORT: self._handle_export,
             IntentType.UNKNOWN: self._handle_unknown,
         }
 
@@ -356,7 +391,110 @@ class Agent:
 
     def _handle_logs(self, entities: Dict[str, Any]) -> str:
         """处理日志查询意图"""
-        # 获取最近的对话记忆
+        # 支持三种日志：
+        # 1. 审计日志（Keeper 操作记录）
+        # 2. 系统日志（journalctl, /var/log）
+        # 3. Docker 容器日志
+
+        log_source = entities.get("log_source")  # "audit", "system", "docker", "file"
+
+        # 系统日志查询
+        if log_source in ("system", "journal"):
+            from ..tools.logs import LogTools
+
+            unit = entities.get("unit")
+            lines = int(entities.get("lines", 50))
+            since = entities.get("since")
+            keyword = entities.get("query")
+
+            success, output = LogTools.query_journal(
+                lines=lines, unit=unit, since=since, keyword=keyword
+            )
+
+            if not success:
+                return f"[系统日志] {output}"
+            if not output.strip():
+                return "[系统日志] 未找到匹配的日志"
+
+            # 截断过长输出
+            max_lines = 200
+            output_lines = output.split("\n")
+            if len(output_lines) > max_lines:
+                output = "\n".join(output_lines[:max_lines]) + f"\n\n... (截断，共 {len(output_lines)} 行)"
+
+            return f"[系统日志] (journalctl -n {lines}):\n\n{output}"
+
+        # Docker 日志查询
+        if log_source in ("docker", "container"):
+            from ..tools.logs import LogTools
+
+            container = entities.get("container") or entities.get("host")
+            lines = int(entities.get("lines", 50))
+            keyword = entities.get("query")
+
+            if not container:
+                return "[日志] 请指定容器名称，例如：查看 nginx 容器日志"
+
+            success, output = LogTools.query_docker_logs(
+                container_name=container, lines=lines, keyword=keyword
+            )
+
+            if not success:
+                return f"[Docker 日志] {output}"
+            if not output.strip():
+                return f"[Docker 日志] 容器 {container} 无日志输出"
+
+            return f"[Docker 日志] ({container}):\n\n{output}"
+
+        # 文件日志查询
+        if log_source in ("file",):
+            from ..tools.logs import LogTools
+
+            path = entities.get("path")
+            lines = int(entities.get("lines", 50))
+            keyword = entities.get("query")
+
+            if not path:
+                return "[日志] 请指定日志文件路径，例如：查看 /var/log/nginx/access.log"
+
+            success, output = LogTools.query_file(path=path, lines=lines, keyword=keyword)
+
+            if not success:
+                return f"[文件日志] {output}"
+            if not output.strip():
+                return f"[文件日志] 文件 {path} 无匹配内容"
+
+            return f"[文件日志] ({path}):\n\n{output}"
+
+        # 查询审计日志（Keeper 操作记录）
+        query = entities.get("query")
+        host = entities.get("host")
+        hours = entities.get("hours")
+        intent_filter = entities.get("intent_type")
+
+        # 如果有具体查询条件，查询审计日志
+        if query or host or hours or intent_filter:
+            hours_int = int(hours) if hours else 24
+            records = self.audit.get_history(
+                hours=hours_int,
+                limit=20,
+                host=host,
+                intent=intent_filter,
+            )
+
+            if not records:
+                return f"[日志] 过去 {hours_int} 小时内没有找到 Keeper 操作记录"
+
+            lines = [f"[日志] 过去 {hours_int} 小时的 Keeper 操作记录:"]
+            for i, record in enumerate(records, 1):
+                time_str = record.timestamp[11:19]  # 提取 HH:MM:SS
+                result_icon = "✓" if record.result == "success" else "✗"
+                host_str = f" ({record.host})" if record.host else ""
+                lines.append(f"  {i}. [{time_str}] {result_icon} {record.intent}{host_str}")
+
+            return "\n".join(lines)
+
+        # 默认显示最近的对话记忆
         recent_turns = self.state.memory.get_recent_turns(5)
 
         if not recent_turns:
@@ -394,6 +532,69 @@ class Agent:
 **其他**
   - "退出" - 结束会话
 """
+
+    def _handle_export(self, entities: Dict[str, Any]) -> str:
+        """处理报告导出意图"""
+        from ..tools.reporter import ReportExporter
+        from ..tools.ssh import SSHTools
+
+        fmt = (entities.get("format") or "html").lower()
+
+        # 获取上次巡检的主机
+        host = entities.get("host") or self.state.context.current_host
+        if not host:
+            # 尝试从记忆中获取最近的主机
+            mentioned_hosts = self.state.memory.get_hosts_mentioned()
+            if mentioned_hosts:
+                host = mentioned_hosts[-1]
+
+        # 获取阈值
+        profile = entities.get("profile") or self.state.context.current_profile
+        thresholds = {
+            "cpu": self.config.get_threshold("cpu", profile),
+            "memory": self.config.get_threshold("memory", profile),
+            "disk": self.config.get_threshold("disk", profile),
+        }
+
+        # 确定导出格式
+        if fmt in ("json",):
+            export_fmt = "json"
+        elif fmt in ("md", "markdown"):
+            export_fmt = "markdown"
+        else:
+            export_fmt = "html"
+
+        # 生成文件名
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+        # 确定主机列表
+        all_hosts = entities.get("all_hosts", False)
+        if all_hosts:
+            hosts = SSHTools.get_hosts_from_file("/etc/hosts")
+            if not hosts:
+                return "[报告] /etc/hosts 中没有找到可巡检的主机"
+        elif host:
+            hosts = [host]
+        else:
+            hosts = ["localhost"]
+
+        # 采集数据
+        try:
+            statuses = ServerTools.inspect_multiple_hosts(hosts, max_workers=5)
+        except Exception as e:
+            return f"[报告] 采集数据失败：{str(e)}"
+
+        # 导出
+        ext = {"json": "json", "html": "html", "markdown": "md"}[export_fmt]
+        output_path = f"./keeper_report_{timestamp}.{ext}"
+
+        if export_fmt == "json":
+            return ReportExporter.export_json(statuses, thresholds, output_path)
+        elif export_fmt == "html":
+            return ReportExporter.export_html(statuses, thresholds, output_path)
+        else:
+            return ReportExporter.export_markdown(statuses, thresholds, output_path)
 
     def _handle_chat(self, entities: Dict[str, Any]) -> str:
         """处理闲聊意图（备用，正常情况下不会走到这里）"""
