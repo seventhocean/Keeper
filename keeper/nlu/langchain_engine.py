@@ -33,6 +33,10 @@ class LangChainEngine(NLUEngine):
 - install: 安装软件（如"安装 nmap"、"帮我安装漏洞扫描工具"）
 - confirm: 确认执行（如"yes"、"y"、"好的"、"确认"、"执行"）
 - export: 导出报告（如"导出为 JSON"、"生成 HTML 报告"、"保存巡检结果"）
+- k8s_inspect: K8s 集群巡检（如"检查 K8s 集群"、"查看集群状态"、"K8s 巡检"、"看看 Pod 情况"）
+- k8s_logs: K8s Pod 日志查询（如"查看 xxx Pod 的日志"、"查一下 deployment 事件"）
+- k8s_export: 导出 K8s 报告（如"导出 K8s 巡检报告"）
+- k8s_config: K8s 配置（如"帮我配置 K8s"、"你帮我执行"、"自动配置"、"帮我连接"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
@@ -54,6 +58,9 @@ class LangChainEngine(NLUEngine):
 - path: 文件路径
 - lines: 日志行数
 - since: 时间范围
+- pod_name: Pod 名称（K8s 日志查询）
+- namespace: K8s 命名空间
+- k8s_resource: K8s 资源类型（pod, deployment, node, service, pvc, event 等）
 
 直接回复规则（仅 is_task=false 时填写）：
 - 友好、简洁
@@ -85,6 +92,13 @@ class LangChainEngine(NLUEngine):
 用户："查看 Nginx 的访问日志" → is_task=true, intent=logs, entities={{"log_source":"system","unit":"nginx"}}, confidence=0.9
 用户："查看 nginx 容器日志" → is_task=true, intent=logs, entities={{"log_source":"docker","container":"nginx"}}, confidence=0.9
 用户："查看 /var/log/syslog 最后 100 行" → is_task=true, intent=logs, entities={{"log_source":"file","path":"/var/log/syslog","lines":100}}, confidence=0.9
+用户："检查 K8s 集群状态" → is_task=true, intent=k8s_inspect, confidence=0.95
+用户："K8s 巡检" → is_task=true, intent=k8s_inspect, confidence=0.95
+用户："看看 Pod 的情况" → is_task=true, intent=k8s_inspect, confidence=0.9
+用户："查看 kube-system 的 Pod" → is_task=true, intent=k8s_inspect, entities={{"namespace":"kube-system","k8s_resource":"pod"}}, confidence=0.9
+用户："查看 my-app Pod 的日志" → is_task=true, intent=k8s_logs, entities={{"pod_name":"my-app"}}, confidence=0.95
+用户："查看 default namespace 下 nginx Pod 日志" → is_task=true, intent=k8s_logs, entities={{"pod_name":"nginx","namespace":"default"}}, confidence=0.9
+用户："导出 K8s 巡检报告" → is_task=true, intent=k8s_export, confidence=0.95
 """
 
     def __init__(
@@ -178,6 +192,10 @@ class LangChainEngine(NLUEngine):
                 "install": IntentType.INSTALL,
                 "confirm": IntentType.CONFIRM,
                 "export": IntentType.EXPORT,
+                "k8s_inspect": IntentType.K8S_INSPECT,
+                "k8s_logs": IntentType.K8S_LOGS,
+                "k8s_export": IntentType.K8S_EXPORT,
+                "k8s_config": IntentType.K8S_CONFIG,
                 "chat": IntentType.CHAT,
             }
 

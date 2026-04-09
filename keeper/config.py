@@ -44,6 +44,7 @@ class AppConfig:
     current_profile: str = "default"
     llm: LLMConfig = field(default_factory=LLMConfig)
     profiles: Dict[str, Any] = field(default_factory=dict)
+    k8s: Dict[str, Any] = field(default_factory=dict)  # K8s 集群配置
     _config_dir: Optional[Path] = field(default=None, repr=False)
     _config_file: Optional[Path] = field(default=None, repr=False)
 
@@ -79,6 +80,7 @@ class AppConfig:
                 if data:
                     self.current_profile = data.get("current_profile", "default")
                     self.profiles = data.get("profiles", {})
+                    self.k8s = data.get("k8s", {})
                     llm_data = data.get("llm", {})
                     if llm_data:
                         self.llm.provider = llm_data.get("provider", self.llm.provider)
@@ -97,6 +99,7 @@ class AppConfig:
             yaml.safe_dump({
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
+                "k8s": self.k8s,
                 "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
 
@@ -114,6 +117,7 @@ class AppConfig:
             yaml.safe_dump({
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
+                "k8s": self.k8s,
                 "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
 
@@ -137,3 +141,7 @@ class AppConfig:
         thresholds = profile_config.get("thresholds", {})
         defaults = {"cpu": 80, "memory": 85, "disk": 90}
         return thresholds.get(metric, defaults.get(metric, 80))
+
+    def get_k8s_config(self) -> Dict[str, Any]:
+        """获取 K8s 集群配置"""
+        return self.k8s

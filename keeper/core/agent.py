@@ -1,5 +1,6 @@
 """Agent 核心 - 意图处理和任务分发"""
 import time
+from pathlib import Path
 from typing import Optional, Dict, Any
 from dataclasses import dataclass, field
 from .context import ContextManager, MemoryManager, AgentState
@@ -128,6 +129,10 @@ class Agent:
             IntentType.CONFIRM: self._handle_confirm_no_task,
             IntentType.CHAT: self._handle_chat,
             IntentType.EXPORT: self._handle_export,
+            IntentType.K8S_INSPECT: self._handle_k8s_inspect,
+            IntentType.K8S_LOGS: self._handle_k8s_logs,
+            IntentType.K8S_EXPORT: self._handle_k8s_export,
+            IntentType.K8S_CONFIG: self._handle_k8s_config,
             IntentType.UNKNOWN: self._handle_unknown,
         }
 
@@ -248,6 +253,8 @@ class Agent:
             return self._execute_install(task.package, task.host)
         elif task.task_type == "scan":
             return self._execute_scan(task.host)
+        elif task.task_type == "k8s_config":
+            return self._execute_k8s_config(entities)
 
         return "[系统] 未知任务类型。"
 
@@ -296,6 +303,58 @@ class Agent:
     def _execute_scan(self, host: str) -> str:
         """执行扫描"""
         return self._handle_scan({"host": host})
+
+    def _execute_k8s_config(self, entities: Dict[str, Any]) -> str:
+        """执行 K8s 配置（用户选择后的确认）"""
+        import os
+
+        # 获取候选列表（从任务中保存的数据）
+        candidates_str = ""
+        if hasattr(self, '_pending_k8s_candidates'):
+            candidates_str = self._pending_k8s_candidates
+            self._pending_k8s_candidates = ""
+
+        # 用户可能回复编号
+        choice = entities.get("host") or entities.get("query") or "1"
+        try:
+            choice_num = int(choice)
+        except (ValueError, TypeError):
+            choice_num = 1
+
+        candidates = []
+        for item in (candidates_str or "").split(","):
+            if ":" in item:
+                t, p = item.split(":", 1)
+                candidates.append((t, p))
+
+        if not candidates or choice_num < 1 or choice_num > len(candidates):
+            return f"[K8s] 无效选择，请重新输入编号（1-{len(candidates)}）。"
+
+        cluster_type, kubeconfig = candidates[choice_num - 1]
+        self.config.k8s["kubeconfig"] = kubeconfig
+        self.config.k8s["cluster_type"] = cluster_type.lower() if cluster_type != "Kubeadm" else "k8s"
+        self.config.save()
+
+        # 测试连接
+        from ..tools.k8s.client import K8sClient, K8sClusterConfig
+        k8s_cfg = K8sClusterConfig(
+            kubeconfig_path=kubeconfig,
+            cluster_type=self.config.k8s["cluster_type"],
+        )
+        k8s_client = K8sClient(k8s_cfg)
+        success, msg = k8s_client.connect()
+        k8s_client.close()
+
+        if success:
+            return (
+                f"[K8s] 已配置并连接成功\n\n"
+                f"  集群类型：{self.config.k8s['cluster_type']}\n"
+                f"  kubeconfig：{kubeconfig}\n"
+                f"  集群信息：{msg}\n\n"
+                f"现在可以说'检查 K8s 集群'了。"
+            )
+        else:
+            return f"[K8s] kubeconfig 已配置但连接失败：{msg}"
 
     def _remote_install(self, host: str, package: str) -> str:
         """远程安装软件"""
@@ -515,6 +574,12 @@ class Agent:
   - "看看这台机器健康吗"
   - "服务器状态"
 
+**K8s 集群管理**
+  - "检查 K8s 集群状态"
+  - "K8s 巡检"
+  - "查看 Pod 的情况"
+  - "查看 my-app Pod 的日志"
+
 **漏洞扫描**
   - "扫描漏洞"
   - "检查有没有安全问题"
@@ -623,3 +688,270 @@ class Agent:
     def stop(self) -> None:
         """停止 Agent"""
         self.state.is_running = False
+
+    def _get_k8s_client(self, auto_detect: bool = True):
+        """获取已连接的 K8s 客户端
+
+        Args:
+            auto_detect: 连接失败时是否自动检测 kubeconfig 并询问用户
+
+        Returns:
+            (k8s_client, formatter, error_msg)
+            如果需要用户确认，error_msg 包含询问信息
+        """
+        from ..tools.k8s.client import K8sClient, K8sClusterConfig
+        from ..tools.k8s.formatter import format_cluster_report
+
+        k8s_cfg_data = self.config.get_k8s_config()
+        kubeconfig = k8s_cfg_data.get("kubeconfig", "")
+        context = k8s_cfg_data.get("context", "")
+        cluster_type = k8s_cfg_data.get("cluster_type", "k8s")
+
+        k8s_cfg = K8sClusterConfig(
+            kubeconfig_path=kubeconfig,
+            context=context,
+            cluster_type=cluster_type,
+        )
+
+        k8s_client = K8sClient(k8s_cfg)
+        success, msg = k8s_client.connect()
+
+        if success:
+            return k8s_client, format_cluster_report, None
+
+        # 连接失败，尝试自动检测
+        if not auto_detect:
+            return None, None, f"[K8s] 连接集群失败：{msg}"
+
+        # 检测 K3s
+        import os
+        k3s_path = "/etc/rancher/k3s/k3s.yaml"
+        if os.path.exists(k3s_path):
+            # K3s 环境，直接自动配置
+            k8s_cfg_data["kubeconfig"] = k3s_path
+            k8s_cfg_data["cluster_type"] = "k3s"
+            self.config.k8s = k8s_cfg_data
+            self.config.save()
+
+            k8s_cfg = K8sClusterConfig(
+                kubeconfig_path=k3s_path,
+                context=context,
+                cluster_type="k3s",
+            )
+            k8s_client = K8sClient(k8s_cfg)
+            success, msg = k8s_client.connect()
+            if success:
+                return k8s_client, format_cluster_report, None
+            return None, None, f"[K8s] 连接 K3s 失败：{msg}"
+
+        # 检测标准 K8s
+        std_path = str(Path.home() / ".kube/config")
+        if os.path.exists(std_path):
+            k8s_cfg_data["kubeconfig"] = std_path
+            k8s_cfg_data["cluster_type"] = "k8s"
+            self.config.k8s = k8s_cfg_data
+            self.config.save()
+
+            k8s_cfg = K8sClusterConfig(
+                kubeconfig_path=std_path,
+                context=context,
+                cluster_type="k8s",
+            )
+            k8s_client = K8sClient(k8s_cfg)
+            success, msg = k8s_client.connect()
+            if success:
+                return k8s_client, format_cluster_report, None
+            return None, None, f"[K8s] 连接集群失败：{msg}"
+
+        # 没有找到 kubeconfig，询问用户
+        return None, None, (
+            "[K8s] 未找到 Kubeconfig 配置文件\n\n"
+            "我检测到以下可能的位置：\n"
+            "  - K3s: /etc/rancher/k3s/k3s.yaml\n"
+            "  - K8s: ~/.kube/config\n\n"
+            "请告诉我你的 kubeconfig 路径，或者说'帮我配置'我来自动检测。"
+        )
+
+    def _handle_k8s_inspect(self, entities: Dict[str, Any]) -> str:
+        """处理 K8s 集群巡检意图"""
+        k8s_client, fmt, err = self._get_k8s_client(auto_detect=True)
+        if err:
+            return err
+
+        try:
+            from ..tools.k8s.inspector import K8sInspector
+            from ..tools.k8s.formatter import format_cluster_report
+
+            namespace = entities.get("namespace")
+
+            success, report = K8sInspector.inspect_cluster(k8s_client, namespace)
+            if not success:
+                return f"[K8s] 巡检失败：{report.issues[0] if report.issues else '未知错误'}"
+
+            self.state.context.current_host = "k8s-cluster"
+            return format_cluster_report(report, namespace)
+        except Exception as e:
+            return f"[K8s] 巡检失败：{str(e)}"
+        finally:
+            k8s_client.close()
+
+    def _handle_k8s_logs(self, entities: Dict[str, Any]) -> str:
+        """处理 K8s Pod 日志查询意图"""
+        k8s_client, _, err = self._get_k8s_client(auto_detect=True)
+        if err:
+            return err
+
+        try:
+            from ..tools.k8s.logs import K8sLogTools
+
+            pod_name = entities.get("pod_name")
+            namespace = entities.get("namespace") or "default"
+            lines = int(entities.get("lines", 100))
+            keyword = entities.get("query")
+            container = entities.get("container")
+
+            if not pod_name:
+                return "[K8s] 请指定 Pod 名称，例如：查看 my-app Pod 的日志"
+
+            success, output = K8sLogTools.get_pod_logs(
+                k8s_client,
+                pod_name=pod_name,
+                namespace=namespace,
+                lines=lines,
+                keyword=keyword,
+                container=container,
+            )
+
+            if not success:
+                return f"[K8s 日志] {output}"
+
+            # 截断过长输出
+            max_lines = 200
+            output_lines = output.split("\n")
+            if len(output_lines) > max_lines:
+                output = "\n".join(output_lines[:max_lines]) + f"\n\n... (截断，共 {len(output_lines)} 行)"
+
+            ns_prefix = f"{namespace}/" if namespace != "default" else ""
+            return f"[K8s 日志] ({ns_prefix}{pod_name}):\n\n{output}"
+        except Exception as e:
+            return f"[K8s 日志] 查询失败：{str(e)}"
+        finally:
+            k8s_client.close()
+
+    def _handle_k8s_export(self, entities: Dict[str, Any]) -> str:
+        """处理 K8s 报告导出意图"""
+        k8s_client, _, err = self._get_k8s_client(auto_detect=True)
+        if err:
+            return err
+
+        try:
+            from ..tools.k8s.inspector import K8sInspector
+            from ..tools.k8s.formatter import format_cluster_report
+            from datetime import datetime
+
+            namespace = entities.get("namespace")
+            fmt = (entities.get("format") or "html").lower()
+
+            success, report = K8sInspector.inspect_cluster(k8s_client, namespace)
+            if not success:
+                return f"[K8s] 导出数据获取失败"
+
+            # 生成文件名
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+            if fmt == "json":
+                import json
+                output_path = f"./k8s_report_{timestamp}.json"
+                data = {
+                    "timestamp": report.timestamp,
+                    "cluster_type": report.cluster_type,
+                    "k8s_version": report.k8s_version,
+                    "score": report.score,
+                    "node_count": report.node_count,
+                    "pods_total": report.pods_total,
+                    "abnormal_pods": [
+                        {"name": p.name, "namespace": p.namespace, "phase": p.phase, "issues": p.issues}
+                        for p in report.abnormal_pods
+                    ],
+                    "issues": report.issues,
+                }
+                with open(output_path, "w") as f:
+                    json.dump(data, f, indent=2, ensure_ascii=False)
+                return f"[K8s] 报告已导出：{output_path}"
+            else:
+                # HTML 或 MD 默认使用文本格式
+                output_path = f"./k8s_report_{timestamp}.md"
+                text_report = format_cluster_report(report, namespace)
+                with open(output_path, "w") as f:
+                    f.write(text_report)
+                return f"[K8s] 报告已导出：{output_path}"
+        except Exception as e:
+            return f"[K8s] 导出失败：{str(e)}"
+        finally:
+            k8s_client.close()
+
+    def _handle_k8s_config(self, entities: Dict[str, Any]) -> str:
+        """处理 K8s 配置意图 - 检测并配置 K8s 连接"""
+        import os
+
+        # 检测常见的 kubeconfig 路径
+        candidates = []
+        k3s_path = "/etc/rancher/k3s/k3s.yaml"
+        std_path = str(Path.home() / ".kube/config")
+        kubeadm_path = "/etc/kubernetes/admin.conf"
+
+        if os.path.exists(k3s_path):
+            candidates.append(("K3s", k3s_path))
+        if os.path.exists(std_path):
+            candidates.append(("K8s", std_path))
+        if os.path.exists(kubeadm_path):
+            candidates.append(("Kubeadm", kubeadm_path))
+
+        if not candidates:
+            return (
+                "[K8s] 未检测到 Kubeconfig 文件\n\n"
+                "请手动指定 kubeconfig 路径，例如：\n"
+                "  keeper config set --k8s-kubeconfig /path/to/kubeconfig"
+            )
+
+        # 只找到一个，直接配置
+        if len(candidates) == 1:
+            cluster_type, kubeconfig = candidates[0]
+            self.config.k8s["kubeconfig"] = kubeconfig
+            self.config.k8s["cluster_type"] = cluster_type.lower() if cluster_type != "Kubeadm" else "k8s"
+            self.config.save()
+
+            # 测试连接
+            from ..tools.k8s.client import K8sClient, K8sClusterConfig
+            k8s_cfg = K8sClusterConfig(
+                kubeconfig_path=kubeconfig,
+                cluster_type=self.config.k8s["cluster_type"],
+            )
+            k8s_client = K8sClient(k8s_cfg)
+            success, msg = k8s_client.connect()
+            k8s_client.close()
+
+            if success:
+                return (
+                    f"[K8s] 已自动配置并连接成功\n\n"
+                    f"  集群类型：{self.config.k8s['cluster_type']}\n"
+                    f"  kubeconfig：{kubeconfig}\n"
+                    f"  集群信息：{msg}\n\n"
+                    f"现在可以说'检查 K8s 集群'了。"
+                )
+            else:
+                return f"[K8s] kubeconfig 已配置但连接失败：{msg}"
+
+        # 找到多个，询问用户
+        options = "\n".join(f"  {i+1}. {t}: {p}" for i, (t, p) in enumerate(candidates))
+        self._pending_k8s_candidates = ",".join(f"{t}:{p}" for t, p in candidates)
+        self.pending_task = PendingTask(
+            task_type="k8s_config",
+            message=(
+                f"[K8s] 检测到多个 Kubeconfig 文件：\n{options}\n\n"
+                f"请问使用哪一个？请回复编号。"
+            ),
+            package="k8s_config_options",
+            host=",".join(f"{t}:{p}" for t, p in candidates),
+        )
+        return self.pending_task.message

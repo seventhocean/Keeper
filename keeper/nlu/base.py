@@ -16,6 +16,10 @@ class IntentType(str, Enum):
     CONFIRM = "confirm"      # 确认执行
     CHAT = "chat"            # 闲聊/知识问答（非任务）
     EXPORT = "export"        # 导出报告
+    K8S_INSPECT = "k8s_inspect"   # K8s 集群巡检
+    K8S_LOGS = "k8s_logs"         # K8s Pod 日志
+    K8S_EXPORT = "k8s_export"     # 导出 K8s 报告
+    K8S_CONFIG = "k8s_config"     # K8s 配置（帮我配置 K8s）
     UNKNOWN = "unknown"      # 未知意图
 
 

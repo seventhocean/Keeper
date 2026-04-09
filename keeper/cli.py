@@ -22,7 +22,7 @@ STYLE = Style.from_dict({
 
 BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.1 - 智能运维助手              │
+│  Keeper v0.3.0-dev - 智能运维助手        │
 └─────────────────────────────────────────┘
 """
 
@@ -50,7 +50,7 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.1.0')
+@click.version_option(version='0.3.0-dev')
 @click.pass_context
 def cli(ctx):
     """Keeper - 智能运维助手"""
@@ -356,7 +356,10 @@ def config():
 @click.option('--base-url', help='API Base URL')
 @click.option('--model', help='模型名称')
 @click.option('--provider', type=click.Choice(['openai_compatible', 'anthropic']), help='LLM 提供商')
-def set(threshold, metric, profile, api_key, base_url, model, provider):
+@click.option('--k8s-kubeconfig', type=str, help='K8s kubeconfig 文件路径')
+@click.option('--k8s-context', type=str, help='K8s 集群上下文名称')
+@click.option('--k8s-type', type=click.Choice(['k8s', 'k3s']), help='K8s 集群类型')
+def set(threshold, metric, profile, api_key, base_url, model, provider, k8s_kubeconfig, k8s_context, k8s_type):
     """设置配置
 
     示例:
@@ -435,6 +438,25 @@ def set(threshold, metric, profile, api_key, base_url, model, provider):
         else:
             click.echo("  API Key: 未设置")
 
+    # K8s 配置
+    k8s_updated = False
+    if k8s_kubeconfig is not None:
+        config.k8s["kubeconfig"] = k8s_kubeconfig
+        k8s_updated = True
+    if k8s_context is not None:
+        config.k8s["context"] = k8s_context
+        k8s_updated = True
+    if k8s_type is not None:
+        config.k8s["cluster_type"] = k8s_type
+        k8s_updated = True
+
+    if k8s_updated:
+        config.save()
+        click.echo(click.style("✓ K8s 配置已保存:", fg='green'))
+        click.echo(f"  kubeconfig: {config.k8s.get('kubeconfig', 'auto')}")
+        click.echo(f"  context: {config.k8s.get('context', 'default')}")
+        click.echo(f"  cluster_type: {config.k8s.get('cluster_type', 'k8s')}")
+
 
 @config.command()
 def show():
@@ -486,6 +508,158 @@ def clear():
         click.echo("  使用 'keeper init' 重新初始化。")
     else:
         click.echo("没有需要清除的配置。")
+
+
+@cli.group()
+def k8s():
+    """K8s 集群管理命令"""
+    pass
+
+
+@k8s.command("inspect")
+@click.option('--namespace', '-n', type=str, help='限定命名空间')
+@click.option('--kubeconfig', '-k', type=str, help='kubeconfig 文件路径')
+@click.option('--context', '-c', type=str, help='集群上下文名称')
+def k8s_inspect(namespace, kubeconfig, context):
+    """K8s 集群巡检
+
+    示例:
+        keeper k8s inspect
+        keeper k8s inspect -n kube-system
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.inspector import K8sInspector
+    from .tools.k8s.formatter import format_cluster_report
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=kubeconfig or k8s_cfg_data.get("kubeconfig", ""),
+        context=context or k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        ok, report = K8sInspector.inspect_cluster(k8s_client, namespace)
+        if not ok:
+            click.echo(click.style(f"[K8s] 巡检失败", fg='red'))
+            sys.exit(1)
+        click.echo(format_cluster_report(report, namespace))
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 巡检失败：{str(e)}", fg='red'))
+        sys.exit(1)
+    finally:
+        k8s_client.close()
+
+
+@k8s.command("logs")
+@click.argument('pod_name')
+@click.option('--namespace', '-n', default='default', help='命名空间')
+@click.option('--lines', '-l', default=100, type=int, help='日志行数')
+@click.option('--keyword', '-k', type=str, help='关键词过滤')
+@click.option('--container', '-c', type=str, help='容器名称')
+@click.option('--kubeconfig', type=str, help='kubeconfig 文件路径')
+def k8s_logs(pod_name, namespace, lines, keyword, container, kubeconfig):
+    """查看 Pod 日志
+
+    示例:
+        keeper k8s logs my-app
+        keeper k8s logs nginx -n kube-system -l 200
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.logs import K8sLogTools
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=kubeconfig or k8s_cfg_data.get("kubeconfig", ""),
+        context=k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        ok, output = K8sLogTools.get_pod_logs(
+            k8s_client, pod_name=pod_name, namespace=namespace,
+            lines=lines, keyword=keyword, container=container,
+        )
+        if not ok:
+            click.echo(click.style(f"[K8s] {output}", fg='yellow'))
+            return
+        click.echo(f"[K8s 日志] ({namespace}/{pod_name}):\n{output}")
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 日志查询失败：{str(e)}", fg='red'))
+        sys.exit(1)
+    finally:
+        k8s_client.close()
+
+
+@k8s.command("events")
+@click.option('--namespace', '-n', type=str, help='限定命名空间')
+@click.option('--kubeconfig', type=str, help='kubeconfig 文件路径')
+def k8s_events(namespace, kubeconfig):
+    """查看集群 Warning 事件
+
+    示例:
+        keeper k8s events
+        keeper k8s events -n kube-system
+    """
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.k8s.client import K8sClient, K8sClusterConfig
+    from .tools.k8s.inspector import K8sInspector
+
+    k8s_cfg_data = config.get_k8s_config()
+    k8s_cfg = K8sClusterConfig(
+        kubeconfig_path=kubeconfig or k8s_cfg_data.get("kubeconfig", ""),
+        context=k8s_cfg_data.get("context", ""),
+        cluster_type=k8s_cfg_data.get("cluster_type", "k8s"),
+    )
+
+    k8s_client = K8sClient(k8s_cfg)
+    success, msg = k8s_client.connect()
+    if not success:
+        click.echo(click.style(f"[K8s] 连接失败：{msg}", fg='red'))
+        sys.exit(1)
+
+    try:
+        events = K8sInspector._check_events(k8s_client, namespace)
+        if not events:
+            click.echo("[K8s] 无 Warning 事件")
+            return
+
+        lines = [f"[K8s] Warning 事件:"]
+        lines.append("━" * 60)
+        for ev in events[:30]:
+            lines.append(f"  [{ev.severity}] {ev.involved_object} - {ev.reason} (x{ev.count})")
+            if ev.message:
+                msg = ev.message[:120] + "..." if len(ev.message) > 120 else ev.message
+                lines.append(f"    {msg}")
+            lines.append(f"    最近: {ev.last_seen}")
+        lines.append("━" * 60)
+        lines.append(f"共 {len(events)} 条事件")
+        click.echo("\n".join(lines))
+    except Exception as e:
+        click.echo(click.style(f"[K8s] 事件查询失败：{str(e)}", fg='red'))
+        sys.exit(1)
+    finally:
+        k8s_client.close()
 
 
 def main():
