@@ -39,7 +39,7 @@ class FixSuggester:
 
     # 高危命令黑名单 — 不允许 LLM 生成
     DANGEROUS_PATTERNS = [
-        r"\brm\s+-rf\s+/\b",            # rm -rf /
+        r"\brm\s+-rf\s+/",            # rm -rf /
         r"\bdd\s+if=",                  # dd 写磁盘
         r"\bmkfs\b",                    # 格式化磁盘
         r">\s*/etc/",                   # 重写系统配置
