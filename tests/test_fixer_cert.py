@@ -20,6 +20,11 @@ class TestFixSuggester(unittest.TestCase):
         fixes = FixSuggester.generate_rule_based_fixes(data)
         self.assertGreaterEqual(len(fixes), 1)
         self.assertTrue(any("清理" in f.title for f in fixes))
+        # 清理类命令应为 DESTRUCTIVE 级别
+        self.assertTrue(
+            any(f.safety == SafetyLevel.DESTRUCTIVE for f in fixes),
+            "清理命令应标记为 DESTRUCTIVE 级别"
+        )
 
     def test_generate_memory_fixes(self):
         """内存不足时生成修复建议"""
@@ -79,19 +84,72 @@ class TestFixSuggester(unittest.TestCase):
         self.assertEqual(len(fixes), 0)
 
     def test_dangerous_command_blacklist(self):
-        """危险命令被正确拦截"""
+        """危险命令被绝对拒绝"""
         dangerous = [
             "rm -rf /",
-            "rm -rf / --no-preserve-root",
+            "rm -rf /tmp",
+            "rm -rf *",
+            "rm -r /var/log",
+            "rm -f /tmp/test.log",
+            "rm file.txt",
             "dd if=/dev/zero of=/dev/sda",
             "mkfs.ext4 /dev/sda1",
             "echo xxx > /etc/passwd",
             "chmod 777 /",
             "kill -9 1",
+            "shred -vfz -n 5 /etc/shadow",
+            "wipe /var/log",
         ]
         for cmd in dangerous:
             valid, _ = FixSuggester.validate_command(cmd)
             self.assertFalse(valid, f"危险命令未被拦截: {cmd}")
+
+    def test_rm_variants_all_blocked(self):
+        """rm 命令所有常见变体都被拦截"""
+        rm_variants = [
+            "rm -rf /",
+            "rm -rf /var/log/*",
+            "rm -f /tmp/a.log",
+            "rm -r /opt/data",
+            "rm --force /etc/config",
+            "rm -rf *",
+            "rm /important/file",
+        ]
+        for cmd in rm_variants:
+            valid, msg = FixSuggester.validate_command(cmd)
+            self.assertFalse(valid, f"rm 命令未被拦截: {cmd}")
+
+    def test_needs_confirmation(self):
+        """破坏性命令需要二次确认"""
+        destructive = [
+            "docker system prune -f",
+            "docker image prune -a",
+            "apt-get clean",
+            "apt-get autoremove",
+            "journalctl --vacuum-size=100M",
+            "truncate -s 0 /var/log/syslog",
+        ]
+        for cmd in destructive:
+            needs = FixSuggester.needs_confirmation(cmd)
+            self.assertTrue(needs, f"应需要确认: {cmd}")
+
+    def test_safe_commands_no_confirmation(self):
+        """安全命令不需要二次确认"""
+        safe = [
+            "systemctl restart nginx",
+            "journalctl -u sshd",
+            "free -h",
+            "ps aux --sort=-%cpu",
+            "dmesg -T | grep -i oom",
+        ]
+        for cmd in safe:
+            needs = FixSuggester.needs_confirmation(cmd)
+            self.assertFalse(needs, f"不应需要确认: {cmd}")
+
+    def test_dangerous_does_not_need_confirmation(self):
+        """黑名单命令不需要确认（因为直接拒绝）"""
+        needs = FixSuggester.needs_confirmation("rm -rf /")
+        self.assertFalse(needs)
 
     def test_safe_command_allowed(self):
         """安全命令被放行"""

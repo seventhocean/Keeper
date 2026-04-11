@@ -10,8 +10,9 @@ from enum import Enum
 class SafetyLevel(Enum):
     """修复命令安全等级"""
     SAFE = "safe"           # 只读/低风险，如查看日志、检查状态
-    CAUTION = "caution"     # 中等风险，如重启服务、清理文件
-    DANGEROUS = "dangerous" # 高风险，如删除文件、修改配置
+    CAUTION = "caution"     # 中等风险，如重启服务
+    DESTRUCTIVE = "destructive"  # 删除/清理文件，需二次确认
+    DANGEROUS = "dangerous" # 高危，拒绝执行
 
 
 @dataclass
@@ -37,17 +38,29 @@ class FixPlan:
 class FixSuggester:
     """修复建议生成器 — 基于规则 + LLM 生成安全的修复命令"""
 
-    # 高危命令黑名单 — 不允许 LLM 生成
+    # 高危命令黑名单 — 绝对拒绝，不允许生成或执行
     DANGEROUS_PATTERNS = [
-        r"\brm\s+-rf\s+/",            # rm -rf /
-        r"\bdd\s+if=",                  # dd 写磁盘
-        r"\bmkfs\b",                    # 格式化磁盘
-        r">\s*/etc/",                   # 重写系统配置
-        r">\s*/boot/",                  # 写 boot
-        r"chmod\s+777\s+/",             # 全局 777
-        r"kill\s+-9\s+1\b",             # kill init
-        r":\(\)\{\s*:\|:\s*&\s*\};:",   # fork bomb
-        r"\bupdate-grub\b",             # 更新引导
+        r"\brm\s+-",              # 任何 rm 带参数 (rm -rf, rm -r, rm -f)
+        r"\brm\s+\S",             # rm 后跟非空白字符 (rm file)
+        r"\bdd\s+",               # dd 写磁盘
+        r"\bmkfs\b",              # 格式化磁盘
+        r">\s*/etc/",             # 重写系统配置
+        r">\s*/boot/",            # 写 boot
+        r"chmod\s+777\s+/",       # 全局 777
+        r"kill\s+-9\s+1\b",       # kill init
+        r":\(\)\{\s*:\|:\s*&\s*\};:",  # fork bomb
+        r"\bupdate-grub\b",       # 更新引导
+        r"\bshred\b",             # 安全删除
+        r"\bwipe\b",              # 安全擦除
+    ]
+
+    # 破坏性命令模式 — 不拒绝，但必须二次确认
+    DESTRUCTIVE_PATTERNS = [
+        r"\bprune\b",             # docker prune / image prune
+        r"\bclean\b",             # apt-get clean / yum clean
+        r"\bautoremove\b",        # apt-get autoremove
+        r"\bvacuum",              # journalctl vacuum
+        r"\btruncate\b",          # truncate 文件
     ]
 
     # 安全命令白名单模式
@@ -68,15 +81,15 @@ class FixSuggester:
         """分类命令安全等级"""
         cmd = command.strip().lower()
 
-        # 黑名单检查
+        # 黑名单 — 绝对拒绝
         for pattern in cls.DANGEROUS_PATTERNS:
             if re.search(pattern, cmd):
                 return SafetyLevel.DANGEROUS
 
-        # 白名单检查
-        for pattern in cls.SAFE_COMMANDS:
+        # 破坏性命令 — 需二次确认
+        for pattern in cls.DESTRUCTIVE_PATTERNS:
             if re.search(pattern, cmd):
-                return SafetyLevel.CAUTION
+                return SafetyLevel.DESTRUCTIVE
 
         return SafetyLevel.CAUTION
 
@@ -89,20 +102,20 @@ class FixSuggester:
         disk_pct = data.get("disk_percent", 0)
         if disk_pct > 85:
             fixes.append(FixSuggestion(
-                title="清理系统磁盘空间",
+                title="清理系统日志释放磁盘空间",
                 description=f"磁盘使用率 {disk_pct}%，超过 85% 阈值",
                 command="journalctl --vacuum-size=100M",
-                safety=SafetyLevel.CAUTION,
+                safety=SafetyLevel.DESTRUCTIVE,
                 expected_result="释放日志占用的磁盘空间",
-                rollback="无需回滚",
+                rollback="日志已清理，无法恢复",
             ))
             fixes.append(FixSuggestion(
                 title="清理 Docker 无用数据",
                 description="Docker 可能占用了大量磁盘空间",
                 command="docker system prune -f",
-                safety=SafetyLevel.CAUTION,
+                safety=SafetyLevel.DESTRUCTIVE,
                 expected_result="清理已停止容器、无用镜像和构建缓存",
-                rollback="无需回滚",
+                rollback="已停止的容器和无用镜像将被永久删除",
             ))
 
         # 内存不足
@@ -193,10 +206,18 @@ class FixSuggester:
 
     @classmethod
     def validate_command(cls, command: str) -> Tuple[bool, str]:
-        """验证修复命令的安全性"""
-        # 黑名单检查
+        """验证修复命令的安全性
+
+        Returns:
+            (allowed, message)
+            allowed=False 表示绝对拒绝（黑名单）
+            allowed=True 表示可以执行或需要确认
+        """
+        cmd = command.strip().lower()
+
+        # 黑名单 — 绝对拒绝
         for pattern in cls.DANGEROUS_PATTERNS:
-            if re.search(pattern, command):
+            if re.search(pattern, cmd):
                 return False, f"命令被拒绝：包含高危操作（安全规则）"
 
         # 长度限制
@@ -212,6 +233,23 @@ class FixSuggester:
             return False, "命令包含过多分号，请拆分为多个独立步骤"
 
         return True, "命令安全检查通过"
+
+    @classmethod
+    def needs_confirmation(cls, command: str) -> bool:
+        """判断命令是否需要二次确认"""
+        cmd = command.strip().lower()
+
+        # 黑名单命令不需要确认（因为直接拒绝）
+        for pattern in cls.DANGEROUS_PATTERNS:
+            if re.search(pattern, cmd):
+                return False
+
+        # 破坏性命令需要确认
+        for pattern in cls.DESTRUCTIVE_PATTERNS:
+            if re.search(pattern, cmd):
+                return True
+
+        return False
 
     @classmethod
     def execute_command(cls, command: str, host: str = "localhost", timeout: int = 60) -> Tuple[bool, str]:
@@ -301,6 +339,7 @@ class FixSuggester:
             safety_icon = {
                 SafetyLevel.SAFE: "🟢",
                 SafetyLevel.CAUTION: "🟡",
+                SafetyLevel.DESTRUCTIVE: "🟠",
                 SafetyLevel.DANGEROUS: "🔴",
             }[fix.safety]
 
@@ -309,6 +348,8 @@ class FixSuggester:
             lines.append(f"      命令：{fix.command}")
             lines.append(f"      预期：{fix.expected_result}")
             lines.append(f"      回滚：{fix.rollback}")
+            if fix.safety == SafetyLevel.DESTRUCTIVE:
+                lines.append(f"      ⚠ 执行此操作需要二次确认")
 
         lines.append("")
         lines.append("=" * 50)
@@ -352,7 +393,8 @@ CPU: {data.get('cpu_percent', 0)}% ({data.get('cpu_count', 0)} 核心)
 {data.get('error_logs', '无')[:500]}
 
 请提供具体的修复命令。每条命令必须：
-1. 是安全的（不删除系统关键文件，不破坏服务）
-2. 有明确的预期效果
-3. 最好有回滚方案
-4. 只输出可直接执行的命令，不要输出说明文字"""
+1. **绝对禁止**使用 rm 删除任何文件（包括 rm -rf, rm -f, rm -r）
+2. 不删除系统关键文件，不破坏服务
+3. 有明确的预期效果
+4. 最好有回滚方案
+5. 只输出可直接执行的命令，不要输出说明文字"""

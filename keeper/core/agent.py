@@ -282,6 +282,11 @@ class Agent:
             success, output = DockerTools.prune_images()
             icon = "✓" if success else "✗"
             return f"[Docker] {icon} 镜像清理: {output}"
+        elif task.task_type == "fix_execute":
+            index = int(task.package)
+            return self._do_execute_fix(index)
+        elif task.task_type == "fix_execute_all":
+            return self._do_execute_all_fixes()
 
         return "[系统] 未知任务类型。"
 
@@ -1633,6 +1638,82 @@ class Agent:
 
         return FixSuggester.format_fix_plan(plan)
 
+    def _do_execute_fix(self, index: int) -> str:
+        """确认后的实际执行（已通过安全检查）"""
+        if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
+            return "[自动修复] 修复建议已过期，请重新生成。"
+
+        if index < 1 or index > len(self._pending_fix_suggestions):
+            return f"[自动修复] 编号无效"
+
+        fix = self._pending_fix_suggestions[index - 1]
+        safety = fix.safety
+
+        lines = [f"[自动修复] 正在执行: {fix.title}"]
+        lines.append(f"  命令: {fix.command}")
+        lines.append(f"  安全等级: {safety.value}")
+        lines.append("")
+
+        success, output = FixSuggester.execute_command(fix.command)
+        if success:
+            lines.append(f"  ✓ 执行成功")
+            if output:
+                lines.append(f"  输出: {output[:300]}")
+        else:
+            lines.append(f"  ✗ 执行失败: {output}")
+
+        if hasattr(self, "_fix_data_before"):
+            data_after = RCAEngine.collect_server_data()
+            metric = "disk" if "磁盘" in fix.title or "clean" in fix.command.lower() else "memory"
+            improved, verify_msg = FixSuggester.verify_fix(self._fix_data_before, data_after, metric)
+            lines.append(f"")
+            lines.append(f"  验证: {verify_msg}")
+            if improved:
+                self._fix_data_before = data_after
+
+        self._pending_fix_suggestions.pop(index - 1)
+        if self._pending_fix_suggestions:
+            lines.append("")
+            lines.append(f"  还有 {len(self._pending_fix_suggestions)} 个待修复建议。")
+
+        return "\n".join(lines)
+
+    def _do_execute_all_fixes(self) -> str:
+        """确认后批量执行"""
+        if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
+            return "[自动修复] 修复建议已过期，请重新生成。"
+
+        lines = ["[自动修复] 开始批量修复", "=" * 50]
+        total = len(self._pending_fix_suggestions)
+        success_count = 0
+        fail_count = 0
+
+        for i, fix in enumerate(list(self._pending_fix_suggestions), 1):
+            valid, msg = FixSuggester.validate_command(fix.command)
+            if not valid:
+                lines.append(f"  [{i}] 跳过: {fix.title} (安全检查未通过: {msg})")
+                fail_count += 1
+                continue
+
+            success, output = FixSuggester.execute_command(fix.command)
+            if success:
+                lines.append(f"  [{i}] ✓ {fix.title}")
+                success_count += 1
+            else:
+                lines.append(f"  [{i}] ✗ {fix.title}: {output}")
+                fail_count += 1
+
+        if hasattr(self, "_fix_data_before"):
+            data_after = RCAEngine.collect_server_data()
+            for metric in ("disk", "memory", "load"):
+                improved, verify_msg = FixSuggester.verify_fix(self._fix_data_before, data_after, metric)
+                lines.append(f"  [{metric}] {verify_msg}")
+
+        lines.append("")
+        lines.append(f"修复完成: 成功 {success_count}/{total}, 失败 {fail_count}/{total}")
+        self._pending_fix_suggestions = []
+        return "\n".join(lines)
+
     def _execute_single_fix(self, index: int) -> str:
         """执行单个修复建议"""
         if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
@@ -1644,12 +1725,27 @@ class Agent:
         fix = self._pending_fix_suggestions[index - 1]
         safety = fix.safety
 
-        # 安全检查
+        # 安全检查 — 黑名单直接拒绝
         valid, msg = FixSuggester.validate_command(fix.command)
         if not valid:
             return f"[自动修复] 命令安全检查未通过：{msg}"
 
-        # 执行
+        # 破坏性命令 — 必须二次确认
+        if FixSuggester.needs_confirmation(fix.command):
+            self.pending_task = PendingTask(
+                task_type="fix_execute",
+                package=str(index),
+                message=(
+                    f"[自动修复] ⚠ 此操作涉及文件清理/数据删除：\n"
+                    f"  标题: {fix.title}\n"
+                    f"  命令: {fix.command}\n"
+                    f"  预期: {fix.expected_result}\n\n"
+                    f"此操作不可逆，输入 'yes' 或 '确认' 执行。"
+                ),
+            )
+            return self.pending_task.message
+
+        # 安全命令 — 直接执行
         lines = [f"[自动修复] 正在执行: {fix.title}"]
         lines.append(f"  命令: {fix.command}")
         lines.append(f"  安全等级: {safety.value}")
@@ -1672,7 +1768,7 @@ class Agent:
             lines.append(f"")
             lines.append(f"  验证: {verify_msg}")
             if improved:
-                self._fix_data_before = data_after  # 更新基准
+                self._fix_data_before = data_after
 
         # 移除已执行的建议
         self._pending_fix_suggestions.pop(index - 1)
@@ -1686,6 +1782,23 @@ class Agent:
         """批量执行所有修复建议"""
         if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
             return "[自动修复] 没有待执行的修复建议。"
+
+        # 检查是否有破坏性命令
+        has_destructive = any(
+            FixSuggester.needs_confirmation(fix.command)
+            for fix in self._pending_fix_suggestions
+        )
+
+        if has_destructive:
+            self.pending_task = PendingTask(
+                task_type="fix_execute_all",
+                message=(
+                    f"[自动修复] ⚠ 批量修复中包含文件清理操作，需要二次确认。\n"
+                    f"  共 {len(self._pending_fix_suggestions)} 个修复任务\n\n"
+                    f"输入 'yes' 或 '确认' 执行全部修复。"
+                ),
+            )
+            return self.pending_task.message
 
         lines = ["[自动修复] 开始批量修复", "=" * 50]
         total = len(self._pending_fix_suggestions)
