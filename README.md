@@ -8,7 +8,7 @@
 - 轻量化的智能运维助手
 - 通过自然语言对话完成服务器巡检、漏洞扫描、异常诊断
 - 基于 LangChain + LLM 实现自然语言理解
-- **版本：** v0.4.0-dev (2026-04-11)
+- **版本：** v0.5.0-dev (2026-04-12)
 
 ---
 
@@ -75,7 +75,7 @@ keeper
 
 ```
 ┌─────────────────────────────────────────┐
-│  Keeper v0.4.0-dev - 智能运维助手        │
+│  Keeper v0.5.0-dev - 智能运维助手        │
 └─────────────────────────────────────────┘
 
 👋 你好！我是 Keeper，你的智能运维助手。
@@ -535,7 +535,7 @@ keeper k8s inspect --kubeconfig /path/to/config  # 指定 kubeconfig
 自动搜索 kubeconfig 路径（`/etc/rancher/k3s/k3s.yaml` → `~/.kube/config`），
 自动识别集群类型（k3s / 标准 K8s），无需手动配置。
 
-### Phase 4 - 智能分析与变更 (v0.4.0-dev)
+### Phase 4 - 智能分析与变更 (v0.4.0) ✅ 已完成
 - [x] Docker 容器管理（列表/统计/镜像/清理/操作）
 - [x] 根因分析 (RCA) — 进程级/依赖链分析 + 双机对比
 - [x] 网络诊断（Ping/端口/DNS/HTTP/Traceroute）
@@ -545,8 +545,9 @@ keeper k8s inspect --kubeconfig /path/to/config  # 指定 kubeconfig
 - [x] SSL/TLS 证书监控（本地文件/K8s Secret/域名）
 - [x] 飞书通知推送（Webhook + 签名校验）
 - [x] 告警规则引擎（阈值/异常/自动告警）
+- [x] 77 个单元测试覆盖
 
-### Phase 5 - 安全与集成
+### Phase 5 - 安全与集成 (v0.5.0-dev) 🚧 开发中
 - [ ] 安全基线检查 (CIS Benchmark/弱密码/端口暴露)
 - [ ] 操作审计报表（定期生成）
 - [ ] Prometheus 告警集成

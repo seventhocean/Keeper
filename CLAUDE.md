@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keeper** - 智能运维 Agent，类似 Claude Code 的对话式 CLI 工具
 
-**版本：** v0.4.0-dev (2026-04-11)
+**版本：** v0.5.0-dev (2026-04-12)
 
 ## 开发进度
 
@@ -15,8 +15,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Phase 1 - MVP | v0.1.0 | ✅ 完成 | CLI 框架、NLU 引擎、服务器巡检、配置管理、对话记忆 |
 | Phase 2 - 增强 | v0.2.0 | ✅ 完成 | 报告导出、审计日志、系统日志查询、多主机巡检、SSH 采集 |
 | Phase 3 - K8s | v0.3.0 | ✅ 完成 | K8s 集群管理、资源巡检、异常检测、ConfigMap/Secret/Ingress/LimitRange |
-| Phase 4 - 智能分析 | v0.4.0 | 🚧 开发中 | Docker 管理、根因分析、网络诊断、K8s 深度操作、定时任务、自动修复、证书监控 |
-| Phase 5 - 安全集成 | v0.5.0 | 🔲 规划中 | 安全基线、审计报表、Prometheus 集成、IM 通知 |
+| Phase 4 - 智能分析 | v0.4.0 | ✅ 完成 | Docker 管理、根因分析、网络诊断、K8s 深度操作、定时任务、自动修复、证书监控、飞书通知 |
+| Phase 5 - 安全集成 | v0.5.0 | 🚧 开发中 | 安全基线、审计报表、Prometheus 集成、IM 通知扩展 |
 
 ## 快速命令
 
