@@ -22,7 +22,7 @@ STYLE = Style.from_dict({
 
 BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.3.0-dev - 智能运维助手        │
+│  Keeper v0.4.0-dev - 智能运维助手        │
 └─────────────────────────────────────────┘
 """
 
@@ -50,7 +50,7 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.3.0-dev')
+@click.version_option(version='0.4.0-dev')
 @click.pass_context
 def cli(ctx):
     """Keeper - 智能运维助手"""
@@ -945,6 +945,110 @@ def schedule_remove(task_id):
         click.echo(click.style(f"[定时任务] 任务 {task_id} 已删除", fg='green'))
     else:
         click.echo(click.style(f"[定时任务] 任务 {task_id} 不存在", fg='red'))
+
+
+@cli.group()
+def fix():
+    """自动修复建议与执行"""
+    pass
+
+
+@fix.command("suggest")
+@click.option('--host', '-h', default='localhost', help='目标主机')
+def fix_suggest(host):
+    """生成修复建议"""
+    from .tools.rca import RCAEngine
+    from .tools.fixer import FixSuggester, SafetyLevel
+
+    data = RCAEngine.collect_server_data()
+    fixes = FixSuggester.generate_rule_based_fixes(data)
+
+    if not fixes:
+        click.echo(click.style("[自动修复] 当前未发现需要修复的问题", fg='green'))
+        return
+
+    lines = ["[自动修复] 修复建议:", "=" * 50]
+    for i, fix in enumerate(fixes, 1):
+        safety_icon = {
+            SafetyLevel.SAFE: "🟢",
+            SafetyLevel.CAUTION: "🟡",
+            SafetyLevel.DANGEROUS: "🔴",
+        }[fix.safety]
+        lines.append(f"\n  [{i}] {safety_icon} {fix.title}")
+        lines.append(f"      问题：{fix.description}")
+        lines.append(f"      命令：{fix.command}")
+        lines.append(f"      预期：{fix.expected_result}")
+        lines.append(f"      回滚：{fix.rollback}")
+
+    lines.append("")
+    lines.append("=" * 50)
+    lines.append("在对话中说 '执行第N个' 或 '全部执行' 来应用修复。")
+    click.echo("\n".join(lines))
+
+
+@fix.command("verify")
+@click.option('--host', '-h', default='localhost', help='目标主机')
+def fix_verify(host):
+    """验证修复效果 — 显示当前服务器状态摘要"""
+    from .tools.rca import RCAEngine
+
+    data = RCAEngine.collect_server_data()
+    lines = ["[自动修复] 当前服务器状态:"]
+    lines.append(f"  CPU: {data.get('cpu_percent', 0)}%")
+    lines.append(f"  内存: {data.get('memory_percent', 0)}%")
+    lines.append(f"  磁盘: {data.get('disk_percent', 0)}%")
+    lines.append(f"  负载: {data.get('load_avg', {}).get('1m', 0)}")
+    click.echo("\n".join(lines))
+
+
+@cli.group()
+def cert():
+    """SSL/TLS 证书监控"""
+    pass
+
+
+@cert.command("scan")
+@click.option('--extra-paths', '-p', multiple=True, help='额外扫描路径')
+def cert_scan(extra_paths):
+    """扫描本地证书"""
+    from .tools.cert_monitor import CertMonitor, format_cert_report
+
+    local_certs = CertMonitor.scan_local_certs(extra_paths=list(extra_paths) if extra_paths else None)
+    domain_certs = []
+
+    # 自动检测域名
+    domains = CertMonitor.detect_domains_from_config()
+    if domains:
+        click.echo(f"[证书] 检测到 {len(domains)} 个潜在域名，检查前 5 个...")
+        for d in domains[:5]:
+            cert = CertMonitor.check_domain_cert(d)
+            if cert:
+                domain_certs.append(cert)
+
+    click.echo(format_cert_report(local_certs, [], domain_certs))
+
+
+@cert.command("check-domain")
+@click.argument('domain')
+@click.option('--port', '-p', default=443, type=int, help='端口号')
+def cert_check_domain(domain, port):
+    """检查指定域名的 SSL 证书"""
+    from .tools.cert_monitor import CertMonitor
+
+    cert = CertMonitor.check_domain_cert(domain, port)
+    if cert:
+        status_icon = {"valid": "🟢", "expiring_soon": "🟡", "expired": "🔴"}[cert.status]
+        days = f"剩余 {cert.days_left} 天" if cert.status == "valid" else (f"已过 {abs(cert.days_left)} 天" if cert.status == "expired" else f"剩余 {cert.days_left} 天")
+        lines = [f"[SSL/TLS] {domain}:"]
+        lines.append(f"  状态: {status_icon} {days}")
+        lines.append(f"  主体: {cert.subject}")
+        lines.append(f"  颁发者: {cert.issuer}")
+        lines.append(f"  过期: {cert.not_after}")
+        if cert.domains:
+            lines.append(f"  域名: {', '.join(cert.domains[:5])}")
+        click.echo("\n".join(lines))
+    else:
+        click.echo(click.style(f"[SSL/TLS] 无法获取 {domain} 的证书信息", fg='red'))
 
 
 def main():

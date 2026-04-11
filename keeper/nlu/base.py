@@ -25,6 +25,8 @@ class IntentType(str, Enum):
     RCA_ANALYSIS = "rca_analysis"      # 根因分析
     NETWORK_DIAG = "network_diag"      # 网络诊断
     SCHEDULE_TASK = "schedule_task"    # 定时任务
+    AUTO_FIX = "auto_fix"              # 自动修复
+    CERT_CHECK = "cert_check"          # 证书监控
     UNKNOWN = "unknown"      # 未知意图
 
 

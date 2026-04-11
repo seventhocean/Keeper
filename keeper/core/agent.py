@@ -14,7 +14,9 @@ from ..tools.ssh import SSHTools, SSHConfig
 from ..tools.docker_tools import DockerTools, format_docker_containers, format_docker_images
 from ..tools.network import NetworkTools, format_ping_result, format_port_result, format_dns_result, format_http_result
 from ..tools.rca import RCAEngine
+from ..tools.fixer import FixSuggester, FixPlan, SafetyLevel, generate_fix_prompt_from_data
 from ..tools.scheduler import TaskScheduler, format_task_list
+from ..tools.cert_monitor import CertMonitor, format_cert_report
 
 
 @dataclass
@@ -145,6 +147,8 @@ class Agent:
             IntentType.RCA_ANALYSIS: self._handle_rca,
             IntentType.NETWORK_DIAG: self._handle_network,
             IntentType.SCHEDULE_TASK: self._handle_schedule,
+            IntentType.AUTO_FIX: self._handle_auto_fix,
+            IntentType.CERT_CHECK: self._handle_cert_check,
             IntentType.UNKNOWN: self._handle_unknown,
         }
 
@@ -1585,3 +1589,203 @@ class Agent:
             return f"[智能分析]\n\n{response.strip()}"
         except Exception as e:
             return f"[智能分析] LLM 诊断失败：{str(e)}"
+
+    def _handle_auto_fix(self, entities: Dict[str, Any]) -> str:
+        """处理自动修复意图"""
+        fix_action = entities.get("fix_action", "suggest").lower()
+        fix_index = entities.get("fix_index")
+
+        # 执行具体修复
+        if fix_action in ("execute", "执行") and fix_index is not None:
+            return self._execute_single_fix(int(fix_index))
+
+        # 执行全部修复
+        if fix_action in ("execute_all", "全部执行", "一键修复"):
+            return self._execute_all_fixes()
+
+        # 验证修复效果
+        if fix_action in ("verify", "验证"):
+            if hasattr(self, "_fix_data_before"):
+                data_after = RCAEngine.collect_server_data()
+                result = FixSuggester.verify_fix(self._fix_data_before, data_after, "disk")
+                return f"[自动修复] 验证结果：{result}"
+            return "[自动修复] 没有修复前数据，无法验证"
+
+        # 默认：生成修复建议
+        data = RCAEngine.collect_server_data()
+        rule_fixes = FixSuggester.generate_rule_based_fixes(data)
+
+        if not rule_fixes:
+            # 规则未发现问题，调用 LLM
+            fix_prompt = generate_fix_prompt_from_data(data)
+            return self._call_llm_diagnosis(fix_prompt)
+
+        # 缓存数据供后续使用
+        self._fix_data_before = data
+        self._pending_fix_suggestions = rule_fixes
+
+        plan = FixPlan(
+            summary="服务器问题修复",
+            diagnosis=f"发现 {len(rule_fixes)} 个可修复问题",
+            suggestions=rule_fixes,
+            llm_advice="",
+        )
+
+        return FixSuggester.format_fix_plan(plan)
+
+    def _execute_single_fix(self, index: int) -> str:
+        """执行单个修复建议"""
+        if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
+            return "[自动修复] 没有待执行的修复建议，请先说'帮我修复'生成建议。"
+
+        if index < 1 or index > len(self._pending_fix_suggestions):
+            return f"[自动修复] 编号无效，请输入 1-{len(self._pending_fix_suggestions)}"
+
+        fix = self._pending_fix_suggestions[index - 1]
+        safety = fix.safety
+
+        # 安全检查
+        valid, msg = FixSuggester.validate_command(fix.command)
+        if not valid:
+            return f"[自动修复] 命令安全检查未通过：{msg}"
+
+        # 执行
+        lines = [f"[自动修复] 正在执行: {fix.title}"]
+        lines.append(f"  命令: {fix.command}")
+        lines.append(f"  安全等级: {safety.value}")
+        lines.append("")
+
+        success, output = FixSuggester.execute_command(fix.command)
+        if success:
+            lines.append(f"  ✓ 执行成功")
+            if output:
+                output_preview = output[:300]
+                lines.append(f"  输出: {output_preview}")
+        else:
+            lines.append(f"  ✗ 执行失败: {output}")
+
+        # 验证效果
+        if hasattr(self, "_fix_data_before"):
+            data_after = RCAEngine.collect_server_data()
+            metric = "disk" if "磁盘" in fix.title or "clean" in fix.command.lower() else "memory"
+            improved, verify_msg = FixSuggester.verify_fix(self._fix_data_before, data_after, metric)
+            lines.append(f"")
+            lines.append(f"  验证: {verify_msg}")
+            if improved:
+                self._fix_data_before = data_after  # 更新基准
+
+        # 移除已执行的建议
+        self._pending_fix_suggestions.pop(index - 1)
+        if self._pending_fix_suggestions:
+            lines.append("")
+            lines.append(f"  还有 {len(self._pending_fix_suggestions)} 个待修复建议。")
+
+        return "\n".join(lines)
+
+    def _execute_all_fixes(self) -> str:
+        """批量执行所有修复建议"""
+        if not hasattr(self, "_pending_fix_suggestions") or not self._pending_fix_suggestions:
+            return "[自动修复] 没有待执行的修复建议。"
+
+        lines = ["[自动修复] 开始批量修复", "=" * 50]
+        total = len(self._pending_fix_suggestions)
+        success_count = 0
+        fail_count = 0
+
+        for i, fix in enumerate(list(self._pending_fix_suggestions), 1):
+            valid, msg = FixSuggester.validate_command(fix.command)
+            if not valid:
+                lines.append(f"  [{i}] 跳过: {fix.title} (安全检查未通过: {msg})")
+                fail_count += 1
+                continue
+
+            success, output = FixSuggester.execute_command(fix.command)
+            if success:
+                lines.append(f"  [{i}] ✓ {fix.title}")
+                success_count += 1
+            else:
+                lines.append(f"  [{i}] ✗ {fix.title}: {output}")
+                fail_count += 1
+
+        # 验证总体效果
+        if hasattr(self, "_fix_data_before"):
+            data_after = RCAEngine.collect_server_data()
+            for metric in ("disk", "memory", "load"):
+                improved, verify_msg = FixSuggester.verify_fix(self._fix_data_before, data_after, metric)
+                lines.append(f"  [{metric}] {verify_msg}")
+
+        lines.append("")
+        lines.append(f"修复完成: 成功 {success_count}/{total}, 失败 {fail_count}/{total}")
+        self._pending_fix_suggestions = []
+        return "\n".join(lines)
+
+    def _handle_cert_check(self, entities: Dict[str, Any]) -> str:
+        """处理证书监控意图"""
+        domain = entities.get("domain")
+
+        # 检查指定域名
+        if domain:
+            cert = CertMonitor.check_domain_cert(domain)
+            if cert:
+                status_icon = {"valid": "🟢", "expiring_soon": "🟡", "expired": "🔴"}[cert.status]
+                days = f"剩余 {cert.days_left} 天" if cert.status == "valid" else (f"已过 {abs(cert.days_left)} 天" if cert.status == "expired" else f"剩余 {cert.days_left} 天")
+                lines = [f"[SSL/TLS] {domain}:"]
+                lines.append(f"  状态: {status_icon} {days}")
+                lines.append(f"  主体: {cert.subject}")
+                lines.append(f"  过期: {cert.not_after}")
+                if cert.domains:
+                    lines.append(f"  域名: {', '.join(cert.domains[:5])}")
+                return "\n".join(lines)
+            return f"[SSL/TLS] 无法获取 {domain} 的证书信息"
+
+        # 全面扫描
+        lines = []
+
+        # 本地证书
+        local_certs = CertMonitor.scan_local_certs()
+        lines.append(f"[SSL/TLS] 本地证书扫描: 发现 {len(local_certs)} 个证书")
+        for c in local_certs:
+            if c.status != "valid":
+                icon = "🔴" if c.status == "expired" else "🟡"
+                lines.append(f"  {icon} {c.path} - 剩余 {c.days_left} 天 ({c.not_after})")
+
+        # K8s 证书
+        k8s_client, _, err = self._get_k8s_client(auto_detect=True)
+        k8s_certs = []
+        if not err and k8s_client:
+            try:
+                k8s_certs = CertMonitor.check_k8s_certs(k8s_client)
+                lines.append(f"\n[SSL/TLS] K8s 证书扫描: 发现 {len(k8s_certs)} 个证书")
+                for c in k8s_certs:
+                    if c.status != "valid":
+                        icon = "🔴" if c.status == "expired" else "🟡"
+                        lines.append(f"  {icon} {c.path} - 剩余 {c.days_left} 天 ({c.not_after})")
+            finally:
+                k8s_client.close()
+
+        # 域名证书
+        domains = CertMonitor.detect_domains_from_config()
+        domain_certs = []
+        if domains:
+            lines.append(f"\n[SSL/TLS] 检测到 {len(domains)} 个潜在域名，检查前 5 个:")
+            for d in domains[:5]:
+                cert = CertMonitor.check_domain_cert(d)
+                if cert:
+                    domain_certs.append(cert)
+                    icon = "🔴" if cert.status == "expired" else ("🟡" if cert.status == "expiring_soon" else "🟢")
+                    lines.append(f"  {icon} {d} - 剩余 {cert.days_left} 天 ({cert.not_after})")
+                else:
+                    lines.append(f"  ✗ {d} - 无法获取证书")
+
+        if not lines:
+            return "[SSL/TLS] 未发现任何证书"
+
+        # 汇总报告
+        all_certs = local_certs + k8s_certs + domain_certs
+        expired = [c for c in all_certs if c.status == "expired"]
+        expiring = [c for c in all_certs if c.status == "expiring_soon"]
+        if expired or expiring:
+            lines.append("")
+            lines.append(f"⚠ 发现 {len(expired)} 个已过期、{len(expiring)} 个即将过期的证书")
+
+        return "\n".join(lines)

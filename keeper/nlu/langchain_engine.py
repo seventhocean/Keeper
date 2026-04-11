@@ -42,6 +42,8 @@ class LangChainEngine(NLUEngine):
 - rca_analysis: 根因分析（如"分析为什么 CPU 高"、"帮我排查生产环境问题"、"对比两台机器差异"）
 - network_diag: 网络诊断（如"测试 8.8.8.8 的延迟"、"检查 3306 端口通不通"、"DNS 解析正常吗"）
 - schedule_task: 定时任务（如"帮我定个定时任务"、"每30分钟检查一次"、"每天早上9点巡检"）
+- auto_fix: 自动修复（如"帮我修复"、"帮我清理一下"、"处理一下服务器"、"自动修复问题"、"一键修复"）
+- cert_check: 证书监控（如"检查SSL证书"、"看看证书有没有过期"、"TLS证书状态"、"检查域名证书"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
@@ -81,6 +83,10 @@ class LangChainEngine(NLUEngine):
 - cron_expr: Cron 表达式
 - schedule_description: 定时任务描述
 - task_id: 定时任务 ID
+- fix_action: 修复动作（execute, suggest, verify, list）
+- fix_index: 修复建议编号
+- domain: 域名（DNS/SSL 检测）
+- url: URL（HTTP 检查）
 
 直接回复规则（仅 is_task=false 时填写）：
 - 友好、简洁
@@ -139,6 +145,13 @@ class LangChainEngine(NLUEngine):
 用户:"每天早上9点巡检所有服务器" → is_task=true, intent=schedule_task, entities={{"cron_expr":"0 9 * * *","schedule_description":"服务器巡检","all_hosts":true}}, confidence=0.9
 用户:"查看我的定时任务" → is_task=true, intent=schedule_task, entities={{"schedule_action":"list"}}, confidence=0.95
 用户:"删除第2个定时任务" → is_task=true, intent=schedule_task, entities={{"schedule_action":"remove"}}, confidence=0.9
+用户:"帮我修复服务器问题" → is_task=true, intent=auto_fix, entities={{"fix_action":"suggest"}}, confidence=0.95
+用户:"自动修复" → is_task=true, intent=auto_fix, entities={{"fix_action":"suggest"}}, confidence=0.9
+用户:"帮我清理一下磁盘" → is_task=true, intent=auto_fix, entities={{"fix_action":"suggest"}}, confidence=0.9
+用户:"执行第1个修复" → is_task=true, intent=auto_fix, entities={{"fix_action":"execute","fix_index":1}}, confidence=0.95
+用户:"检查SSL证书" → is_task=true, intent=cert_check, confidence=0.95
+用户:"看看证书有没有过期" → is_task=true, intent=cert_check, confidence=0.9
+用户:"检查 baidu.com 的证书" → is_task=true, intent=cert_check, entities={{"domain":"baidu.com"}}, confidence=0.95
 """
 
     def __init__(
@@ -241,6 +254,8 @@ class LangChainEngine(NLUEngine):
                 "rca_analysis": IntentType.RCA_ANALYSIS,
                 "network_diag": IntentType.NETWORK_DIAG,
                 "schedule_task": IntentType.SCHEDULE_TASK,
+                "auto_fix": IntentType.AUTO_FIX,
+                "cert_check": IntentType.CERT_CHECK,
                 "chat": IntentType.CHAT,
             }
 
