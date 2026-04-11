@@ -335,11 +335,20 @@ def init():
         }
     }
     config.current_profile = "dev"
+
+    # 通知配置占位
+    config.notifications = {
+        "feishu_webhook": "",
+        "feishu_secret": "",
+    }
+
     config.save()
 
     click.echo(click.style("✓ 配置文件已创建:", fg='green'))
     click.echo(f"  {config.config_file}")
-    click.echo("\n使用 'keeper config set' 命令配置 API Key。")
+    click.echo("\n请配置以下信息:")
+    click.echo("  keeper config set --api-key YOUR_API_KEY")
+    click.echo("  keeper config set --feishu-webhook 'https://open.feishu.cn/open-apis/bot/v2/hook/xxx'")
 
 
 @cli.group()
@@ -460,11 +469,13 @@ def set(threshold, metric, profile, api_key, base_url, model, provider, k8s_kube
         click.echo(f"  cluster_type: {config.k8s.get('cluster_type', 'k8s')}")
 
     # 通知配置
-    if feishu_webhook:
-        config.set_notification_config({"feishu_webhook": feishu_webhook})
+    if feishu_webhook is not None:
+        nc = {
+            "feishu_webhook": feishu_webhook,
+        }
         if feishu_secret:
-            config.notifications["feishu_secret"] = feishu_secret
-            config.save()
+            nc["feishu_secret"] = feishu_secret
+        config.set_notification_config(nc)
         click.echo(click.style("✓ 飞书 Webhook 已配置", fg='green'))
 
 
@@ -1075,21 +1086,21 @@ def notify_config(feishu_webhook, feishu_secret):
     config = AppConfig.from_env()
     config.load()
 
-    updated = False
+    nc = {}
     if feishu_webhook:
-        config.set_notification_config({"feishu_webhook": feishu_webhook})
-        if feishu_secret:
-            config.set_notification_config({"feishu_secret": feishu_secret})
-        elif "feishu_secret" not in config.notifications:
-            # 保留原有 secret
-            pass
-        if feishu_secret:
-            config.notifications["feishu_secret"] = feishu_secret
-            config.save()
-        click.echo(click.style("✓ 飞书 Webhook 已配置", fg='green'))
-        updated = True
+        nc["feishu_webhook"] = feishu_webhook
+    elif config.notifications.get("feishu_webhook"):
+        nc["feishu_webhook"] = config.notifications["feishu_webhook"]
 
-    if not updated:
+    if feishu_secret:
+        nc["feishu_secret"] = feishu_secret
+    elif config.notifications.get("feishu_secret"):
+        nc["feishu_secret"] = config.notifications["feishu_secret"]
+
+    if nc:
+        config.set_notification_config(nc)
+        click.echo(click.style("✓ 飞书 Webhook 已配置", fg='green'))
+    else:
         # 显示当前配置
         nc = config.get_notification_config()
         if nc.get("feishu_webhook"):
