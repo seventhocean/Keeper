@@ -38,7 +38,7 @@
 ### 一键安装（推荐）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
 ```
 
 自动完成：检测 Python → 创建隔离环境 → 安装依赖 → 注册命令。
@@ -46,7 +46,7 @@ curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/inst
 ### 手动安装
 
 ```bash
-git clone https://github.com/Winter-wyh1314/Keeper.git
+git clone git@github.com:seventhocean/Keeper.git
 cd Keeper
 python -m venv venv
 source venv/bin/activate

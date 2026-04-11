@@ -3,7 +3,7 @@
 # Keeper - 智能运维 Agent 一键安装脚本
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
 #
 # Or download and run:
 #   chmod +x install.sh && ./install.sh
@@ -24,6 +24,14 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
+# ─── Helpers ─────────────────────────────────────────────────────────────────
+log_info()  { echo -e "${BLUE}[Keeper]${NC} $*"; }
+log_ok()    { echo -e "${GREEN}[Keeper]${NC} $*"; }
+log_warn()  { echo -e "${YELLOW}[Keeper]${NC} $*"; }
+log_error() { echo -e "${RED}[Keeper]${NC} $*"; }
+log_step()  { echo -e "\n${BOLD}${CYAN}>>> $*${NC}"; }
+die()       { log_error "$*"; exit 1; }
+
 # Install paths: app lives in ~/.keeper/app/ (or /opt/keeper/ if root)
 if [ "$(id -u)" -eq 0 ]; then
     log_warn "正在以 root 用户运行，安装路径默认使用 /opt/keeper"
@@ -34,16 +42,8 @@ else
     KEEPER_BIN_DIR="${KEEPER_BIN_INSTALL_DIR:-$HOME/.local/bin}"
 fi
 KEEPER_DIR="$KEEPER_BASE/app"
-REPO_URL="https://github.com/seventhocean/Agent_Project.git"
+REPO_URL="git@github.com:seventhocean/Keeper.git"
 KEEPER_BRANCH="main"
-
-# ─── Helpers ─────────────────────────────────────────────────────────────────
-log_info()  { echo -e "${BLUE}[Keeper]${NC} $*"; }
-log_ok()    { echo -e "${GREEN}[Keeper]${NC} $*"; }
-log_warn()  { echo -e "${YELLOW}[Keeper]${NC} $*"; }
-log_error() { echo -e "${RED}[Keeper]${NC} $*"; }
-log_step()  { echo -e "\n${BOLD}${CYAN}>>> $*${NC}"; }
-die()       { log_error "$*"; exit 1; }
 
 # ─── Ensure PATH ─────────────────────────────────────────────────────────────
 export PATH="$KEEPER_BIN_DIR:$PATH"
@@ -55,7 +55,20 @@ for arg in "$@"; do
         --upgrade)    MODE="upgrade" ;;
         --uninstall)  MODE="uninstall" ;;
         --help|-h)
-            head -14 "$0" | tail -13 | sed 's/^# \?//'
+            cat <<'HELP'
+Keeper - 智能运维 Agent 一键安装脚本
+
+Usage:
+  curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
+
+Or download and run:
+  chmod +x install.sh && ./install.sh
+
+Options:
+  --upgrade    Upgrade existing installation
+  --uninstall  Remove Keeper completely
+  --help       Show this help message
+HELP
             exit 0
             ;;
         *) die "Unknown option: $arg" ;;
@@ -205,6 +218,6 @@ if [ "$MODE" = "upgrade" ]; then
     echo -e "${BOLD}升级成功！${NC}"
 else
     echo -e "${BOLD}一键升级：${NC}"
-    echo -e "  ${CYAN}curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash -s -- --upgrade${NC}"
+    echo -e "  ${CYAN}curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash -s -- --upgrade${NC}"
 fi
 echo ""

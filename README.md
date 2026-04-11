@@ -17,7 +17,7 @@
 ### 一键安装（推荐）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
 ```
 
 自动检测 Python → 创建隔离环境 → 安装依赖 → 注册命令。开箱即用！
@@ -25,7 +25,7 @@ curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/inst
 ### 手动安装（开发模式）
 
 ```bash
-git clone https://github.com/Winter-wyh1314/Keeper.git
+git clone git@github.com:seventhocean/Keeper.git
 cd Keeper
 python -m venv venv
 source venv/bin/activate  # Linux/Mac
@@ -559,14 +559,14 @@ keeper k8s inspect --kubeconfig /path/to/config  # 指定 kubeconfig
 ### 一键安装（用户）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
 ```
 
 ### 开发者模式
 
 ```bash
 # 克隆源码
-git clone https://github.com/Winter-wyh1314/Keeper.git
+git clone git@github.com:seventhocean/Keeper.git
 cd Keeper
 
 # 创建虚拟环境
@@ -591,7 +591,7 @@ black --check keeper/
 ## 常见问题
 
 **Q: 如何快速安装？**
-A: 一条命令：`curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash`
+A: 一条命令：`curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash`
 
 **Q: 如何在本地测试？**
 A: 使用 `keeper` 进入交互模式，或运行 `keeper run 检查 localhost`
