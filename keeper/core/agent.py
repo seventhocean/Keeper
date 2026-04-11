@@ -1956,17 +1956,21 @@ class Agent:
         response: str,
         is_error: bool,
     ) -> None:
-        """任务执行后自动推送到飞书"""
+        """任务执行后自动推送到飞书 — 仅巡检类任务"""
         nc = self.config.get_notification_config()
         webhook = nc.get("feishu_webhook")
         if not webhook:
             return
 
+        # 只有巡检类任务才自动推送，其他任务不推送
+        inspect_intents = {IntentType.INSPECT, IntentType.K8S_INSPECT, IntentType.DOCKER_INSPECT}
+        if intent not in inspect_intents:
+            return
+
         notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
 
         # 巡检类任务：发送结构化报告卡片
-        inspect_intents = {IntentType.INSPECT, IntentType.K8S_INSPECT, IntentType.DOCKER_INSPECT}
-        if intent in inspect_intents and self._last_inspect_statuses:
+        if self._last_inspect_statuses:
             thresholds = {
                 "cpu": self.config.get_threshold("cpu"),
                 "memory": self.config.get_threshold("memory"),
@@ -1977,34 +1981,6 @@ class Agent:
                 thresholds=thresholds,
                 title=f"Keeper 服务器巡检报告",
             )
-            return
-
-        # 其他任务：发送文本摘要卡片
-        icon = "🔴" if is_error else "🟢"
-        intent_name = intent.value if isinstance(intent, IntentType) else str(intent)
-        title = f"{icon} Keeper {intent_name}"
-
-        # 截取响应摘要
-        lines = response.split("\n")
-        summary_lines = []
-        for line in lines[:8]:
-            summary_lines.append({"tag": "text", "text": line})
-
-        sections = [summary_lines]
-
-        # 添加主机信息
-        host = entities.get("host") or self.state.context.current_host
-        if host:
-            sections.append([{"tag": "text", "text": f"主机: {host}"}])
-
-        # 添加时间
-        from datetime import datetime
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        sections.append([{"tag": "text", "text": f"时间: {now}"}])
-
-        footer = "Keeper v0.4.0-dev"
-
-        notifier.send_rich(title=title, sections=sections, footer=footer)
 
     def _handle_send_notify(self, entities: Dict[str, Any]) -> str:
         """处理推送通知意图 — 将最近结果推送到飞书"""
