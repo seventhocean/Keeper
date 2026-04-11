@@ -2031,7 +2031,8 @@ class Agent:
         title = f"{icon} Keeper {last_record.intent}"
 
         lines = last_record.response.split("\n")
-        summary_lines = [{"tag": "text", "text": line} for line in lines[:8]]
+        # 飞书卡片消息长度限制，最多发送 30 行
+        summary_lines = [{"tag": "text", "text": line} for line in lines[:30]]
         sections = [summary_lines]
 
         host = last_record.host or self.state.context.current_host
