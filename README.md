@@ -8,7 +8,7 @@
 - 轻量化的智能运维助手
 - 通过自然语言对话完成服务器巡检、漏洞扫描、异常诊断
 - 基于 LangChain + LLM 实现自然语言理解
-- **版本：** v0.2.0 (2026-04-09)
+- **版本：** v0.3.0 (2026-04-11)
 
 ---
 
@@ -66,15 +66,16 @@ keeper
 
 ```
 ┌─────────────────────────────────────────┐
-│  Keeper v0.1 - 智能运维助手              │
+│  Keeper v0.3 - 智能运维助手              │
 └─────────────────────────────────────────┘
 
 👋 你好！我是 Keeper，你的智能运维助手。
-   已连接：https://api.qnaigc.com/v1 (doubao-seed-2.0-mini)
+   已连接：https://api.qnaigc.com/v1 (deepseek/deepseek-v3.2-251201)
 
-keeper> 帮我检查一下 192.168.1.100 这台机器
-keeper> CPU 使用率高怎么办？
-keeper> 扫描一下生产环境的所有服务器
+keeper> 帮我检查一下 spring 这台机器
+keeper> K8s 集群状态怎么样？
+keeper> 批量巡检所有服务器
+keeper> 查看系统有没有什么问题
 ```
 
 ### 单命令模式（非交互）
@@ -226,6 +227,9 @@ keeper run 扫描 --full                    # 完整扫描
 ```bash
 keeper init                               # 初始化配置文件
 keeper config set --api-key xxx           # 设置 API Key
+keeper config set --threshold 90 --metric cpu  # 设置阈值
+keeper config set --k8s-kubeconfig /path/to/kubeconfig  # K8s 配置
+keeper config set --k8s-context k3s-default  # K8s 上下文
 keeper config show                        # 查看配置
 keeper config clear                       # 清除配置
 keeper status                             # 显示当前状态
@@ -234,15 +238,30 @@ keeper logs --host 192.168.1.100          # 按主机过滤
 keeper logs --json                        # JSON 格式输出
 ```
 
+### K8s 命令
+
+```bash
+keeper k8s inspect                        # K8s 集群巡检
+keeper k8s inspect -n kube-system         # 指定 namespace
+keeper k8s logs <pod> [--lines 50]        # Pod 日志查询
+keeper k8s logs <pod> -n kube-system      # 指定 namespace
+keeper k8s events                         # 查看 Warning 事件
+keeper k8s inspect --kubeconfig /etc/rancher/k3s/k3s.yaml  # 指定 kubeconfig
+```
+
 ### 支持的意图
 
 | 意图 | 说明 | 示例 |
 |------|------|------|
 | inspect | 服务器巡检 | "检查 192.168.1.100", "看看这台机器健康吗" |
+| batch_inspect | 批量巡检 | "批量检查所有服务器", "巡检所有主机" |
 | scan | 漏洞扫描 | "扫描漏洞", "检查有没有安全问题" |
 | config | 配置管理 | "保存配置", "切换到 production" |
 | logs | 日志查询 | "查看最近操作", "查看系统日志" |
 | export | 报告导出 | "导出为 JSON", "生成 HTML 报告" |
+| k8s_inspect | K8s 巡检 | "检查 K8s 集群", "K8s 巡检" |
+| k8s_logs | K8s 日志 | "查看 coredns 的 Pod 日志" |
+| k8s_export | K8s 报告 | "导出 K8s 巡检报告" |
 | help | 帮助 | "你能做什么？", "帮助" |
 | chat | 闲聊/知识问答 | "你好", "CPU 使用率高怎么办" |
 
@@ -273,15 +292,20 @@ keeper logs --json                        # JSON 格式输出
 │   │   ├── base.py       # NLU 抽象基类
 │   │   └── langchain_engine.py  # LangChain 引擎实现
 │   ├── core/
-│   │   ├── agent.py      # Agent 核心
+│   │   ├── agent.py      # Agent 核心（意图分发、K8s 自动检测）
 │   │   ├── context.py    # 上下文管理 + 记忆系统
 │   │   └── audit.py      # 审计日志持久化
 │   └── tools/
 │       ├── server.py     # 服务器工具 (psutil)
 │       ├── scanner.py    # 扫描工具 (Nmap)
-│       ├── ssh.py        # SSH 远程采集
+│       ├── ssh.py        # SSH 远程采集 (base64 编码执行)
 │       ├── reporter.py   # 报告导出 (JSON/HTML/MD)
-│       └── logs.py       # 系统日志查询
+│       ├── logs.py       # 系统日志查询
+│       └── k8s/
+│           ├── client.py       # K8s 客户端封装（自动检测 K3s/标准 K8s）
+│           ├── inspector.py    # K8s 集群巡检（评分 0-100）
+│           ├── formatter.py    # 巡检报告格式化
+│           └── logs.py         # Pod 日志查询 & exec
 ├── tests/
 │   ├── test_keeper.py    # 核心测试
 │   ├── test_audit.py     # 审计日志测试
@@ -359,6 +383,11 @@ keeper config set --base-url https://api.qnaigc.com/v1 \
 # 切换 Provider
 keeper config set --provider anthropic
 
+# 设置 K8s 配置（自动检测环境时可省略）
+keeper config set --k8s-kubeconfig /etc/rancher/k3s/k3s.yaml
+keeper config set --k8s-context k3s-default
+keeper config set --k8s-type k3s
+
 # 查看配置
 keeper config show
 
@@ -434,23 +463,59 @@ profiles:
 
 ### Phase 2 - 增强功能 (已完成 ✅)
 - [x] 报告生成 (JSON/HTML/Markdown)
-- [x] 多主机批量巡检
-- [x] SSH 远程采集
+- [x] 多主机批量巡检（SSH + 线程池并行）
+- [x] SSH 远程采集（base64 编码执行 Python 脚本，避免转义问题）
 - [x] 审计日志持久化 (audit.log)
-- [x] 系统日志查询 (journalctl, /var/log)
-- [x] 容器日志查询 (docker logs)
+- [x] 系统日志查询 (journalctl, /var/log, Docker)
+- [x] 系统异常自动检测（SSH 暴力登录/OOM/磁盘 I/O/服务失败）
 - [x] 31 个测试用例全部通过
 
-### Phase 3 - K8s 集群巡检 (自建单集群)
-- [ ] K8s 客户端封装 (kubernetes Python SDK)
-- [ ] Node 状态检查 (Ready/资源使用/kubelet 健康)
-- [ ] Pod 状态巡检 (Running/Pending/Failed/重启次数)
-- [ ] Deployment/StatefulSet/DaemonSet 状态
-- [ ] ConfigMap/Secret 资源巡检
-- [ ] PVC/PV 存储状态检查
-- [ ] Namespace 资源配额监控
-- [ ] Service/Ingress 配置检查
-- [ ] 异常 Pod 检测 (CrashLoopBackOff/OOMKilled)
+### Phase 3 - K8s 集群管理 (已完成 ✅)
+
+#### K8s 集群巡检
+```
+keeper> 检查 K8s 集群状态
+
+[K8s 巡检] 集群巡检报告
+集群类型：  k3s
+K8s 版本：  v1.34.6+k3s1
+节点数量：  1
+健康评分：100/100 - 健康
+```
+
+自动检测 K3s / 标准 K8s 环境，一键巡检：
+- **Node 检查** — Ready 状态、角色、版本、可调度状态、Taints
+- **Pod 检查** — 异常检测（Pending/Failed/CrashLoopBackOff/OOMKilled/ImagePullBackOff）
+- **工作负载** — Deployment/StatefulSet/DaemonSet 副本数与滚动更新状态
+- **Service 检查** — 类型、端口映射、Endpoints 健康
+- **存储巡检** — PVC/PV 绑定状态、StorageClass、容量
+- **ConfigMap/Secret** — 过大 ConfigMap、TLS 证书过期检测、空资源清理提示
+- **Ingress** — 路由规则、TLS 配置、后端服务验证
+- **LimitRange** — Namespace 资源限制检查
+- **ResourceQuota** — 资源配额使用率对比
+- **Warning 事件** — 聚合去重，Top 20 展示
+- **健康评分** — 0-100 分，综合节点/Pod/工作负载/事件计算
+
+#### K8s 日志查询
+```
+keeper> 查看 coredns 的日志
+keeper> 查看 kube-system 下 coredns 最近 50 行日志
+```
+支持 Pod 模糊匹配、namespace 指定、行数限制、容器指定。
+
+#### K8s 命令
+```bash
+keeper k8s inspect                        # K8s 集群巡检
+keeper k8s inspect -n kube-system         # 指定 namespace
+keeper k8s logs <pod-name>                # 查看 Pod 日志
+keeper k8s logs <pod> --namespace kube-system  # 指定 namespace
+keeper k8s events                         # 查看 Warning 事件
+keeper k8s inspect --kubeconfig /path/to/config  # 指定 kubeconfig
+```
+
+#### K3s 自动检测
+自动搜索 kubeconfig 路径（`/etc/rancher/k3s/k3s.yaml` → `~/.kube/config`），
+自动识别集群类型（k3s / 标准 K8s），无需手动配置。
 
 ### Phase 4 - 智能分析与变更
 - [ ] 根因分析 (RCA) - 进程级/依赖链分析
