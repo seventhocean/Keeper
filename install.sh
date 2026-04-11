@@ -3,7 +3,7 @@
 # Keeper - 智能运维 Agent 一键安装脚本
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
 #
 # Or download and run:
 #   chmod +x install.sh && ./install.sh
@@ -28,7 +28,7 @@ NC='\033[0m'
 KEEPER_BASE="${KEEPER_INSTALL_DIR:-$HOME/.keeper}"
 KEEPER_DIR="$KEEPER_BASE/app"
 KEEPER_BIN_DIR="${KEEPER_BIN_INSTALL_DIR:-$HOME/.local/bin}"
-REPO_URL="https://github.com/Winter-wyh1314/Keeper.git"
+REPO_URL="https://github.com/seventhocean/Agent_Project.git"
 KEEPER_BRANCH="main"
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -204,6 +204,6 @@ if [ "$MODE" = "upgrade" ]; then
     echo -e "${BOLD}升级成功！${NC}"
 else
     echo -e "${BOLD}一键升级：${NC}"
-    echo -e "  ${CYAN}curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash -s -- --upgrade${NC}"
+    echo -e "  ${CYAN}curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash -s -- --upgrade${NC}"
 fi
 echo ""

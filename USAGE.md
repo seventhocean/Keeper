@@ -38,7 +38,7 @@
 ### 一键安装（推荐）
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/Winter-wyh1314/Keeper/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/seventhocean/Agent_Project/main/install.sh | bash
 ```
 
 自动完成：检测 Python → 创建隔离环境 → 安装依赖 → 注册命令。
