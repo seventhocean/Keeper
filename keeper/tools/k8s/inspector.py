@@ -1,4 +1,7 @@
 """K8s 集群巡检工具"""
+import base64
+import ssl
+import re
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -18,6 +21,8 @@ class K8sNodeStatus:
     cpu_capacity: str
     memory_capacity: str
     pods_count: int
+    schedulable: bool = True
+    taints: List[Dict[str, str]] = field(default_factory=list)
     conditions: List[Dict[str, str]] = field(default_factory=list)
 
 
@@ -87,6 +92,38 @@ class K8sEventSummary:
 
 
 @dataclass
+class K8sIngressStatus:
+    """K8s Ingress 状态"""
+    name: str
+    namespace: str
+    rules: List[str]  # host/path 规则列表
+    tls_hosts: List[str]
+    backend_services: List[str]
+    issues: List[str] = field(default_factory=list)
+
+
+@dataclass
+class K8sConfigSecretStatus:
+    """K8s ConfigMap/Secret 状态"""
+    kind: str  # ConfigMap/Secret
+    name: str
+    namespace: str
+    data_keys: List[str]
+    size_bytes: int = 0
+    secret_type: str = ""
+    issues: List[str] = field(default_factory=list)
+
+
+@dataclass
+class K8sLimitRangeStatus:
+    """K8s LimitRange 状态"""
+    name: str
+    namespace: str
+    limits: List[Dict[str, Any]]
+    issues: List[str] = field(default_factory=list)
+
+
+@dataclass
 class K8sClusterReport:
     """K8s 集群巡检报告"""
     timestamp: str
@@ -99,9 +136,12 @@ class K8sClusterReport:
     workloads: List[K8sWorkloadStatus]
     services: List[K8sServiceStatus]
     storage: List[K8sStorageStatus]
-    events_warnings: List[K8sEventSummary]
-    namespaces: List[str]
-    resource_quotas: List[Dict[str, Any]]
+    ingresses: List[K8sIngressStatus] = field(default_factory=list)
+    config_secrets: List[K8sConfigSecretStatus] = field(default_factory=list)
+    limit_ranges: List[K8sLimitRangeStatus] = field(default_factory=list)
+    events_warnings: List[K8sEventSummary] = field(default_factory=list)
+    namespaces: List[str] = field(default_factory=list)
+    resource_quotas: List[Dict[str, Any]] = field(default_factory=list)
     score: int = 100
     issues: List[str] = field(default_factory=list)
 
@@ -132,6 +172,9 @@ class K8sInspector:
                 workloads=[],
                 services=[],
                 storage=[],
+                ingresses=[],
+                config_secrets=[],
+                limit_ranges=[],
                 events_warnings=[],
                 namespaces=[],
                 resource_quotas=[],
@@ -160,13 +203,22 @@ class K8sInspector:
             # 5. 存储检查
             report.storage = K8sInspector._check_storage(k8s_client, namespace)
 
-            # 6. 事件警告
+            # 6. Ingress 检查
+            report.ingresses = K8sInspector._check_ingresses(k8s_client, namespace)
+
+            # 7. ConfigMap/Secret 巡检
+            report.config_secrets = K8sInspector._check_config_secrets(k8s_client, namespace)
+
+            # 8. LimitRange 检查
+            report.limit_ranges = K8sInspector._check_limit_ranges(k8s_client, namespace)
+
+            # 9. 事件警告
             report.events_warnings = K8sInspector._check_events(k8s_client, namespace)
 
-            # 7. Namespace 列表
+            # 10. Namespace 列表
             report.namespaces = K8sInspector._list_namespaces(k8s_client)
 
-            # 8. ResourceQuota 检查
+            # 11. ResourceQuota 检查
             report.resource_quotas = K8sInspector._check_resource_quotas(k8s_client, namespace)
 
             # 9. 计算健康评分
@@ -186,6 +238,9 @@ class K8sInspector:
                 workloads=[],
                 services=[],
                 storage=[],
+                ingresses=[],
+                config_secrets=[],
+                limit_ranges=[],
                 events_warnings=[],
                 namespaces=[],
                 resource_quotas=[],
@@ -203,6 +258,9 @@ class K8sInspector:
                 workloads=[],
                 services=[],
                 storage=[],
+                ingresses=[],
+                config_secrets=[],
+                limit_ranges=[],
                 events_warnings=[],
                 namespaces=[],
                 resource_quotas=[],
@@ -238,6 +296,10 @@ class K8sInspector:
             cpu = node.status.capacity.get("cpu", "unknown")
             memory = node.status.capacity.get("memory", "unknown")
 
+            # 调度状态
+            schedulable = not node.spec.unschedulable if node.spec else True
+            taints = [{"key": t.key, "effect": t.effect} for t in (node.spec.taints or [])]
+
             # Pod 计数
             pods_count = 0
             try:
@@ -256,6 +318,8 @@ class K8sInspector:
                 cpu_capacity=cpu,
                 memory_capacity=memory,
                 pods_count=pods_count,
+                schedulable=schedulable,
+                taints=taints,
                 conditions=conditions,
             ))
 
@@ -614,6 +678,233 @@ class K8sInspector:
                         "hard": dict(q.spec.hard or {}),
                         "used": dict(q.status.used or {}),
                     })
+        except Exception:
+            pass
+
+        return results
+
+    # 敏感关键词（用于检测 Secret 中的潜在敏感信息）
+    SENSITIVE_KEYWORDS = ["password", "passwd", "secret", "token", "api_key", "apikey",
+                          "access_key", "private_key", "credential"]
+
+    @staticmethod
+    def _check_ingresses(k8s_client: K8sClient, namespace: Optional[str] = None) -> List[K8sIngressStatus]:
+        """检查 Ingress 状态"""
+        results = []
+        try:
+            if namespace:
+                ingresses = k8s_client.networking_v1.list_namespaced_ingress(namespace)
+            else:
+                ingresses = k8s_client.networking_v1.list_ingress_for_all_namespaces()
+
+            for ing in ingresses.items:
+                rules = []
+                backend_services = []
+                issues = []
+
+                # 解析规则
+                for rule in (ing.spec.rules or []):
+                    host = rule.host or "*"
+                    if rule.http and rule.http.paths:
+                        for path in rule.http.paths:
+                            path_str = f"{host}{path.path or '/'}"
+                            rules.append(path_str)
+                            if path.backend.service:
+                                backend_services.append(path.backend.service.name)
+                    else:
+                        rules.append(host)
+
+                # TLS 检查
+                tls_hosts = []
+                for tls in (ing.spec.tls or []):
+                    tls_hosts.extend(tls.hosts or [])
+                    # 检查 Secret 是否存在
+                    secret_name = tls.secret_name
+                    if secret_name:
+                        try:
+                            ns = ing.metadata.namespace or "default"
+                            k8s_client.core_v1.read_namespaced_secret(secret_name, ns)
+                        except ApiException as e:
+                            if e.status == 404:
+                                issues.append(f"TLS Secret '{secret_name}' 不存在")
+
+                # Backend 服务检查
+                for svc_name in backend_services:
+                    try:
+                        ns = ing.metadata.namespace or "default"
+                        k8s_client.core_v1.read_namespaced_service(svc_name, ns)
+                    except ApiException as e:
+                        if e.status == 404:
+                            issues.append(f"Backend Service '{svc_name}' 不存在")
+
+                # 检查是否有规则
+                if not rules:
+                    issues.append("没有配置路由规则")
+
+                results.append(K8sIngressStatus(
+                    name=ing.metadata.name,
+                    namespace=ing.metadata.namespace or "default",
+                    rules=rules,
+                    tls_hosts=tls_hosts,
+                    backend_services=backend_services,
+                    issues=issues,
+                ))
+        except Exception:
+            pass
+
+        return results
+
+    @staticmethod
+    def _check_config_secrets(k8s_client: K8sClient, namespace: Optional[str] = None) -> List[K8sConfigSecretStatus]:
+        """检查 ConfigMap 和 Secret"""
+        results = []
+        inspector = K8sInspector
+
+        # ConfigMap 检查
+        try:
+            if namespace:
+                cms = k8s_client.core_v1.list_namespaced_config_map(namespace)
+            else:
+                cms = k8s_client.core_v1.list_config_map_for_all_namespaces()
+
+            for cm in cms.items:
+                issues = []
+                data_keys = list(cm.data.keys()) if cm.data else []
+                size_bytes = sum(len(v or "") for v in (cm.data or {}).values())
+
+                # 大 ConfigMap 检测 (接近 1MB 限制)
+                if size_bytes > 500 * 1024:
+                    issues.append(f"ConfigMap 体积较大: {size_bytes / 1024:.0f}KB (限制 1MB)")
+
+                # 空 ConfigMap
+                if not data_keys:
+                    issues.append("ConfigMap 为空")
+
+                results.append(K8sConfigSecretStatus(
+                    kind="ConfigMap",
+                    name=cm.metadata.name,
+                    namespace=cm.metadata.namespace or "default",
+                    data_keys=data_keys,
+                    size_bytes=size_bytes,
+                    issues=issues,
+                ))
+        except Exception:
+            pass
+
+        # Secret 检查
+        try:
+            if namespace:
+                secrets = k8s_client.core_v1.list_namespaced_secret(namespace)
+            else:
+                secrets = k8s_client.core_v1.list_secret_for_all_namespaces()
+
+            for sec in secrets.items:
+                issues = []
+                sec_type = sec.type or "Opaque"
+                data_keys = list(sec.data.keys()) if sec.data else []
+                size_bytes = sum(len(v or "") for v in (sec.data or {}).values())
+
+                # TLS Secret 证书过期检测
+                if sec_type == "kubernetes.io/tls" and sec.data:
+                    cert_data = sec.data.get("tls.crt", "")
+                    if cert_data:
+                        try:
+                            cert_pem = base64.b64decode(cert_data)
+                            cert = ssl.PEM_cert_to_DER_cert(cert_pem.decode())
+                            # 使用 openssl 解析
+                            import subprocess
+                            import tempfile
+                            with tempfile.NamedTemporaryFile(suffix=".pem", delete=False) as f:
+                                f.write(cert_pem)
+                                f.flush()
+                                result = subprocess.run(
+                                    ["openssl", "x509", "-in", f.name, "-noout", "-enddate"],
+                                    capture_output=True, text=True, timeout=10
+                                )
+                                if result.returncode == 0:
+                                    # 解析过期时间
+                                    end_str = result.stdout.strip().split("=", 1)[-1]
+                                    # openssl 格式: Apr 10 12:00:00 2026 GMT
+                                    from datetime import datetime, timezone
+                                    for fmt in ["%b %d %H:%M:%S %Y %Z", "%b  %d %H:%M:%S %Y %Z"]:
+                                        try:
+                                            expiry = datetime.strptime(end_str, fmt)
+                                            expiry = expiry.replace(tzinfo=timezone.utc)
+                                            days_left = (expiry - datetime.now(timezone.utc)).days
+                                            if days_left < 0:
+                                                issues.append(f"TLS 证书已过期")
+                                            elif days_left < 30:
+                                                issues.append(f"TLS 证书将在 {days_left} 天后过期")
+                                            break
+                                        except ValueError:
+                                            continue
+                        except Exception:
+                            pass
+
+                # 检测 Opaque Secret 中的潜在敏感信息
+                if sec_type == "Opaque":
+                    for key in data_keys:
+                        if any(sk in key.lower() for sk in inspector.SENSITIVE_KEYWORDS):
+                            # 这是正常的，但检查是否有过长的值 (可能是误存的文本)
+                            val = sec.data.get(key, "")
+                            try:
+                                decoded = base64.b64decode(val).decode("utf-8")
+                                if len(decoded) > 10000:
+                                    issues.append(f"Secret '{key}' 值异常大 ({len(decoded)} bytes)")
+                            except Exception:
+                                pass
+
+                # 空 Secret
+                if not data_keys:
+                    issues.append("Secret 数据为空")
+
+                results.append(K8sConfigSecretStatus(
+                    kind="Secret",
+                    name=sec.metadata.name,
+                    namespace=sec.metadata.namespace or "default",
+                    data_keys=data_keys,
+                    size_bytes=size_bytes,
+                    secret_type=sec_type,
+                    issues=issues,
+                ))
+        except Exception:
+            pass
+
+        return results
+
+    @staticmethod
+    def _check_limit_ranges(k8s_client: K8sClient, namespace: Optional[str] = None) -> List[K8sLimitRangeStatus]:
+        """检查 LimitRange"""
+        results = []
+        try:
+            if namespace:
+                lrs = k8s_client.core_v1.list_namespaced_limit_range(namespace)
+            else:
+                lrs = k8s_client.core_v1.list_limit_range_for_all_namespaces()
+
+            for lr in lrs.items:
+                limits = []
+                issues = []
+                for item in (lr.spec.limits or []):
+                    limit_info = {
+                        "type": item.type,
+                        "default": dict(item.default or {}),
+                        "default_request": dict(item.default_request or {}),
+                        "max": dict(item.max or {}),
+                        "min": dict(item.min or {}),
+                    }
+                    limits.append(limit_info)
+
+                # 没有默认限制
+                if not limits:
+                    issues.append("没有配置资源限制")
+
+                results.append(K8sLimitRangeStatus(
+                    name=lr.metadata.name,
+                    namespace=lr.metadata.namespace or "default",
+                    limits=limits,
+                    issues=issues,
+                ))
         except Exception:
             pass
 

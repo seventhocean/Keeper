@@ -33,13 +33,17 @@ def format_cluster_report(report: K8sClusterReport, namespace: Optional[str] = N
     lines.append("━" * 50)
 
     if report.nodes:
-        lines.append(f"  {'节点':<25} {'状态':<10} {'角色':<15} {'Pod数':<8} {'版本'}")
+        lines.append(f"  {'节点':<25} {'状态':<10} {'角色':<15} {'Pod数':<8} {'可调度':<8} {'版本'}")
         lines.append("  " + "-" * 50)
         for node in report.nodes:
-            icon = "Ready" if node.status == "Ready" else "NotReady"
-            icon = "✓" if icon == "Ready" else "✗"
+            sched_icon = "✓" if node.schedulable else "✗"
             roles = ",".join(node.roles[:2])
-            lines.append(f"  {node.name:<25} {node.status:<10} {roles:<15} {node.pods_count:<8} {node.k8s_version}")
+            lines.append(f"  {node.name:<25} {node.status:<10} {roles:<15} {node.pods_count:<8} {sched_icon:<8} {node.k8s_version}")
+            if not node.schedulable:
+                lines.append(f"    ⚠ 节点被标记为不可调度")
+            if node.taints:
+                for t in node.taints:
+                    lines.append(f"    Taint: {t['key']}={t['effect']}")
     else:
         lines.append("  未找到节点")
 
@@ -99,13 +103,92 @@ def format_cluster_report(report: K8sClusterReport, namespace: Optional[str] = N
             for issue in s.issues:
                 lines.append(f"    问题: {issue}")
 
+    # Ingress
+    if report.ingresses:
+        lines.append("")
+        lines.append("━" * 50)
+        lines.append("Ingress 路由:")
+        lines.append("━" * 50)
+        for ing in report.ingresses:
+            icon = "✓" if not ing.issues else "✗"
+            lines.append(f"  {icon} {ing.namespace}/{ing.name}")
+            for rule in ing.rules:
+                lines.append(f"    规则: {rule}")
+            if ing.tls_hosts:
+                lines.append(f"    TLS: {', '.join(ing.tls_hosts)}")
+            if ing.backend_services:
+                lines.append(f"    后端: {', '.join(ing.backend_services)}")
+            for issue in ing.issues:
+                lines.append(f"    问题: {issue}")
+    else:
+        lines.append("")
+        lines.append("  (未配置 Ingress)")
+
+    # ConfigMap/Secret 摘要
+    if report.config_secrets:
+        lines.append("")
+        lines.append("━" * 50)
+        lines.append("ConfigMap/Secret 巡检:")
+        lines.append("━" * 50)
+        cms = [c for c in report.config_secrets if c.kind == "ConfigMap"]
+        secrets = [c for c in report.config_secrets if c.kind == "Secret"]
+
+        # ConfigMap 摘要
+        large_cms = [c for c in cms if c.size_bytes > 500 * 1024]
+        empty_cms = [c for c in cms if not c.data_keys]
+        if large_cms or empty_cms:
+            for cm in large_cms:
+                lines.append(f"  ✗ ConfigMap/{cm.namespace}/{cm.name} - 体积过大 ({cm.size_bytes / 1024:.0f}KB)")
+            for cm in empty_cms:
+                lines.append(f"  ⚠ ConfigMap/{cm.namespace}/{cm.name} - 空 ConfigMap")
+        else:
+            lines.append(f"  ✓ ConfigMap: {len(cms)} 个，无异常")
+
+        # Secret 摘要
+        tls_secrets = [s for s in secrets if s.secret_type == "kubernetes.io/tls"]
+        cert_issues = [s for s in secrets if any("TLS" in i or "证书" in i for i in s.issues)]
+        large_secrets = [s for s in secrets if any("异常大" in i for i in s.issues)]
+
+        if cert_issues:
+            for s in cert_issues:
+                for issue in s.issues:
+                    if "TLS" in issue or "证书" in issue:
+                        lines.append(f"  ✗ Secret/{s.namespace}/{s.name} - {issue}")
+        else:
+            lines.append(f"  ✓ TLS 证书: {len(tls_secrets)} 个，无过期")
+
+        if large_secrets:
+            for s in large_secrets:
+                for issue in s.issues:
+                    if "异常大" in issue:
+                        lines.append(f"  ⚠ Secret/{s.namespace}/{s.name} - {issue}")
+
+        # 敏感信息提示
+        total_secrets = len(secrets)
+        lines.append(f"  总计: Secret {total_secrets} 个, ConfigMap {len(cms)} 个")
+
+    # LimitRange
+    if report.limit_ranges:
+        lines.append("")
+        lines.append("━" * 50)
+        lines.append("LimitRange (资源限制):")
+        lines.append("━" * 50)
+        for lr in report.limit_ranges:
+            icon = "✓" if not lr.issues else "✗"
+            lines.append(f"  {icon} {lr.namespace}/{lr.name}")
+            for limit in lr.limits:
+                if limit["default"]:
+                    lines.append(f"    默认限制: {limit['default']}")
+                if limit["default_request"]:
+                    lines.append(f"    默认请求: {limit['default_request']}")
+
     # Warning 事件
     if report.events_warnings:
         lines.append("")
         lines.append("━" * 50)
-        lines.append(f"Warning 事件 (Top {min(len(report.events_warning), 20)}):")
+        lines.append(f"Warning 事件 (Top {min(len(report.events_warnings), 20)}):")
         lines.append("━" * 50)
-        for ev in report.events_warning[:20]:
+        for ev in report.events_warnings[:20]:
             lines.append(f"  [{ev.severity}] {ev.involved_object} - {ev.reason} (x{ev.count})")
             if ev.message:
                 msg = ev.message[:120] + "..." if len(ev.message) > 120 else ev.message
