@@ -44,6 +44,7 @@ class LangChainEngine(NLUEngine):
 - schedule_task: 定时任务（如"帮我定个定时任务"、"每30分钟检查一次"、"每天早上9点巡检"）
 - auto_fix: 自动修复（如"帮我修复"、"帮我清理一下"、"处理一下服务器"、"自动修复问题"、"一键修复"）
 - cert_check: 证书监控（如"检查SSL证书"、"看看证书有没有过期"、"TLS证书状态"、"检查域名证书"）
+- send_notify: 推送通知（如"发送到飞书"、"推送巡检结果"、"发到飞书群"、"推送报告"）
 - unknown: 无法识别的任务
 
 实体提取规则（仅 is_task=true 时填写）：
@@ -256,6 +257,7 @@ class LangChainEngine(NLUEngine):
                 "schedule_task": IntentType.SCHEDULE_TASK,
                 "auto_fix": IntentType.AUTO_FIX,
                 "cert_check": IntentType.CERT_CHECK,
+                "send_notify": IntentType.SEND_NOTIFY,
                 "chat": IntentType.CHAT,
             }
 

@@ -359,7 +359,9 @@ def config():
 @click.option('--k8s-kubeconfig', type=str, help='K8s kubeconfig 文件路径')
 @click.option('--k8s-context', type=str, help='K8s 集群上下文名称')
 @click.option('--k8s-type', type=click.Choice(['k8s', 'k3s']), help='K8s 集群类型')
-def set(threshold, metric, profile, api_key, base_url, model, provider, k8s_kubeconfig, k8s_context, k8s_type):
+@click.option('--feishu-webhook', type=str, help='飞书 Webhook URL')
+@click.option('--feishu-secret', type=str, help='飞书 Webhook 签名密钥')
+def set(threshold, metric, profile, api_key, base_url, model, provider, k8s_kubeconfig, k8s_context, k8s_type, feishu_webhook, feishu_secret):
     """设置配置
 
     示例:
@@ -456,6 +458,14 @@ def set(threshold, metric, profile, api_key, base_url, model, provider, k8s_kube
         click.echo(f"  kubeconfig: {config.k8s.get('kubeconfig', 'auto')}")
         click.echo(f"  context: {config.k8s.get('context', 'default')}")
         click.echo(f"  cluster_type: {config.k8s.get('cluster_type', 'k8s')}")
+
+    # 通知配置
+    if feishu_webhook:
+        config.set_notification_config({"feishu_webhook": feishu_webhook})
+        if feishu_secret:
+            config.notifications["feishu_secret"] = feishu_secret
+            config.save()
+        click.echo(click.style("✓ 飞书 Webhook 已配置", fg='green'))
 
 
 @config.command()
@@ -1049,6 +1059,94 @@ def cert_check_domain(domain, port):
         click.echo("\n".join(lines))
     else:
         click.echo(click.style(f"[SSL/TLS] 无法获取 {domain} 的证书信息", fg='red'))
+
+
+@cli.group()
+def notify():
+    """IM 通知推送管理"""
+    pass
+
+
+@notify.command("config")
+@click.option('--feishu-webhook', type=str, help='飞书群机器人 Webhook URL')
+@click.option('--feishu-secret', type=str, help='飞书 Webhook 签名密钥（可选）')
+def notify_config(feishu_webhook, feishu_secret):
+    """配置通知推送"""
+    config = AppConfig.from_env()
+    config.load()
+
+    updated = False
+    if feishu_webhook:
+        config.set_notification_config({"feishu_webhook": feishu_webhook})
+        if feishu_secret:
+            config.set_notification_config({"feishu_secret": feishu_secret})
+        elif "feishu_secret" not in config.notifications:
+            # 保留原有 secret
+            pass
+        if feishu_secret:
+            config.notifications["feishu_secret"] = feishu_secret
+            config.save()
+        click.echo(click.style("✓ 飞书 Webhook 已配置", fg='green'))
+        updated = True
+
+    if not updated:
+        # 显示当前配置
+        nc = config.get_notification_config()
+        if nc.get("feishu_webhook"):
+            click.echo("当前通知配置:")
+            click.echo(f"  飞书 Webhook: {nc['feishu_webhook'][:30]}...")
+            click.echo(f"  签名校验: {'已配置' if nc.get('feishu_secret') else '未配置'}")
+        else:
+            click.echo("未配置通知推送。使用 --feishu-webhook 配置。")
+
+
+@notify.command("test")
+def notify_test():
+    """发送测试消息到飞书"""
+    config = AppConfig.from_env()
+    config.load()
+
+    from .tools.notify import FeishuNotifier
+
+    nc = config.get_notification_config()
+    webhook = nc.get("feishu_webhook")
+    secret = nc.get("feishu_secret")
+
+    if not webhook:
+        click.echo(click.style("[通知] 未配置飞书 Webhook", fg='red'))
+        click.echo("  使用: keeper notify config --feishu-webhook <url>")
+        sys.exit(1)
+
+    notifier = FeishuNotifier(webhook, secret)
+
+    # 发送测试文本
+    ok = notifier.send_text("🔔 Keeper 测试消息 — 通知推送功能正常")
+    if ok:
+        click.echo(click.style("✓ 测试消息已发送到飞书", fg='green'))
+    else:
+        click.echo(click.style("✗ 发送失败，请检查 Webhook URL 和网络连接", fg='red'))
+        sys.exit(1)
+
+
+@notify.command("status")
+def notify_status():
+    """显示当前通知配置"""
+    config = AppConfig.from_env()
+    config.load()
+
+    nc = config.get_notification_config()
+
+    click.echo("通知推送状态")
+    click.echo("━" * 40)
+
+    if nc.get("feishu_webhook"):
+        url = nc["feishu_webhook"]
+        click.echo(f"  飞书 Webhook: {url[:40]}... ✓")
+        click.echo(f"  签名校验: {'已配置 ✓' if nc.get('feishu_secret') else '未配置'}")
+        click.echo(click.style("  状态: 已启用", fg='green'))
+    else:
+        click.echo(click.style("  飞书 Webhook: 未配置 ✗", fg='red'))
+        click.echo("  使用 'keeper notify config --feishu-webhook <url>' 配置")
 
 
 def main():

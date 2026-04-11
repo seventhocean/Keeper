@@ -17,6 +17,8 @@ from ..tools.rca import RCAEngine
 from ..tools.fixer import FixSuggester, FixPlan, SafetyLevel, generate_fix_prompt_from_data
 from ..tools.scheduler import TaskScheduler, format_task_list
 from ..tools.cert_monitor import CertMonitor, format_cert_report
+from ..tools.notify import FeishuNotifier
+from ..tools.alert import AlertEngine, Alert
 
 
 @dataclass
@@ -120,6 +122,9 @@ class Agent:
             error_message=response if is_error else None,
         )
 
+        # 7. 自动通知（所有任务都推送）
+        self._maybe_notify(parsed.intent, parsed.entities, response, is_error)
+
         return response
 
     def _dispatch(self, parsed: ParsedIntent) -> str:
@@ -149,6 +154,7 @@ class Agent:
             IntentType.SCHEDULE_TASK: self._handle_schedule,
             IntentType.AUTO_FIX: self._handle_auto_fix,
             IntentType.CERT_CHECK: self._handle_cert_check,
+            IntentType.SEND_NOTIFY: self._handle_send_notify,
             IntentType.UNKNOWN: self._handle_unknown,
         }
 
@@ -1902,3 +1908,80 @@ class Agent:
             lines.append(f"⚠ 发现 {len(expired)} 个已过期、{len(expiring)} 个即将过期的证书")
 
         return "\n".join(lines)
+
+    def _maybe_notify(
+        self,
+        intent: IntentType,
+        entities: Dict[str, Any],
+        response: str,
+        is_error: bool,
+    ) -> None:
+        """任务执行后自动推送到飞书"""
+        nc = self.config.get_notification_config()
+        webhook = nc.get("feishu_webhook")
+        if not webhook:
+            return
+
+        notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
+
+        # 构建通知标题和内容
+        icon = "🔴" if is_error else "🟢"
+        intent_name = intent.value if isinstance(intent, IntentType) else str(intent)
+        title = f"{icon} Keeper {intent_name}"
+
+        # 截取响应摘要
+        lines = response.split("\n")
+        summary_lines = []
+        for line in lines[:8]:
+            summary_lines.append({"tag": "text", "text": line})
+
+        sections = [summary_lines]
+
+        # 添加主机信息
+        host = entities.get("host") or self.state.context.current_host
+        if host:
+            sections.append([{"tag": "text", "text": f"主机: {host}"}])
+
+        # 添加时间
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sections.append([{"tag": "text", "text": f"时间: {now}"}])
+
+        footer = "Keeper v0.4.0-dev"
+
+        notifier.send_rich(title=title, sections=sections, footer=footer)
+
+    def _handle_send_notify(self, entities: Dict[str, Any]) -> str:
+        """处理推送通知意图 — 将最近结果推送到飞书"""
+        nc = self.config.get_notification_config()
+        webhook = nc.get("feishu_webhook")
+        if not webhook:
+            return "[通知] 未配置飞书 Webhook\n\n请先配置: keeper notify config --feishu-webhook <url>"
+
+        # 从记忆中获取最近一次对话的响应
+        recent = self.state.memory.get_recent_turns(1)
+        if not recent:
+            return "[通知] 暂无对话记录，请先执行一些操作再推送。"
+
+        last_turn = recent[0]
+        notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
+
+        icon = "🔴" if last_turn.intent in ("error", "unknown") else "🟢"
+        title = f"{icon} Keeper {last_turn.intent}"
+
+        lines = last_turn.agent_response.split("\n")
+        summary_lines = [{"tag": "text", "text": line} for line in lines[:8]]
+        sections = [summary_lines]
+
+        host = self.state.context.current_host
+        if host:
+            sections.append([{"tag": "text", "text": f"主机: {host}"}])
+
+        from datetime import datetime
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        sections.append([{"tag": "text", "text": f"时间: {now}"}])
+
+        ok = notifier.send_rich(title=title, sections=sections, footer="Keeper v0.4.0-dev")
+        if ok:
+            return f"[通知] 已将最近操作结果推送到飞书"
+        return "[通知] 推送失败，请检查 Webhook 配置和网络连接"

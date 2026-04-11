@@ -45,6 +45,7 @@ class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     profiles: Dict[str, Any] = field(default_factory=dict)
     k8s: Dict[str, Any] = field(default_factory=dict)  # K8s 集群配置
+    notifications: Dict[str, Any] = field(default_factory=dict)  # 通知配置
     _config_dir: Optional[Path] = field(default=None, repr=False)
     _config_file: Optional[Path] = field(default=None, repr=False)
 
@@ -81,6 +82,7 @@ class AppConfig:
                     self.current_profile = data.get("current_profile", "default")
                     self.profiles = data.get("profiles", {})
                     self.k8s = data.get("k8s", {})
+                    self.notifications = data.get("notifications", {})
                     llm_data = data.get("llm", {})
                     if llm_data:
                         self.llm.provider = llm_data.get("provider", self.llm.provider)
@@ -100,6 +102,7 @@ class AppConfig:
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
                 "k8s": self.k8s,
+                "notifications": self.notifications,
                 "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
 
@@ -118,6 +121,7 @@ class AppConfig:
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
                 "k8s": self.k8s,
+                "notifications": self.notifications,
                 "llm": self.llm.to_dict(),
             }, f, default_flow_style=False, allow_unicode=True)
 
@@ -145,3 +149,12 @@ class AppConfig:
     def get_k8s_config(self) -> Dict[str, Any]:
         """获取 K8s 集群配置"""
         return self.k8s
+
+    def get_notification_config(self) -> Dict[str, Any]:
+        """获取通知配置"""
+        return self.notifications
+
+    def set_notification_config(self, config: Dict[str, Any]) -> None:
+        """设置通知配置"""
+        self.notifications.update(config)
+        self.save()

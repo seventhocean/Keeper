@@ -27,6 +27,7 @@ class IntentType(str, Enum):
     SCHEDULE_TASK = "schedule_task"    # 定时任务
     AUTO_FIX = "auto_fix"              # 自动修复
     CERT_CHECK = "cert_check"          # 证书监控
+    SEND_NOTIFY = "send_notify"        # 推送到 IM
     UNKNOWN = "unknown"      # 未知意图
 
 
