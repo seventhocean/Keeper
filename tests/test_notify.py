@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch, MagicMock
 from keeper.tools.notify import FeishuNotifier
 from keeper.tools.alert import AlertEngine, Alert
+from keeper.tools.server import ServerStatus
 
 
 class TestFeishuNotifier(unittest.TestCase):
@@ -261,3 +262,96 @@ class TestAlertEngine(unittest.TestCase):
         )
         alerts = AlertEngine.check_cert([valid_cert], [], [])
         self.assertEqual(len(alerts), 0)
+
+
+class TestFeishuReport(unittest.TestCase):
+    """飞书报告卡片测试"""
+
+    def _make_status(self, host="test", **kwargs):
+        defaults = dict(
+            timestamp="2026-04-11 10:00:00",
+            cpu_percent=30.0, memory_percent=40.0,
+            memory_used_gb=4.0, memory_total_gb=8.0,
+            disk_percent=50.0, disk_used_gb=100.0, disk_total_gb=200.0,
+            load_avg_1m=0.5, load_avg_5m=0.4, load_avg_15m=0.3,
+            boot_time="2026-04-10 08:00:00",
+            top_processes=[],
+            ssh_failed=False,
+        )
+        defaults.update(kwargs)
+        return ServerStatus(host=host, **defaults)
+
+    @patch("urllib.request.urlopen")
+    def test_send_report_healthy(self, mock_urlopen):
+        """发送健康主机报告"""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"code": 0}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        notifier = FeishuNotifier("https://test.webhook")
+        statuses = [self._make_status("web-01"), self._make_status("web-02")]
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+
+        result = notifier.send_report(statuses, thresholds)
+        self.assertTrue(result)
+
+    @patch("urllib.request.urlopen")
+    def test_send_report_with_warning(self, mock_urlopen):
+        """发送含警告主机的报告"""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"code": 0}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        notifier = FeishuNotifier("https://test.webhook")
+        statuses = [
+            self._make_status("web-01", cpu_percent=92),
+            self._make_status("web-02", memory_percent=90),
+            self._make_status("web-03"),
+        ]
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+
+        result = notifier.send_report(statuses, thresholds)
+        self.assertTrue(result)
+
+    @patch("urllib.request.urlopen")
+    def test_send_report_with_failed(self, mock_urlopen):
+        """发送含失败主机的报告"""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"code": 0}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        notifier = FeishuNotifier("https://test.webhook")
+        statuses = [
+            self._make_status("web-01"),
+            self._make_status("web-02", ssh_failed=True),
+        ]
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+
+        result = notifier.send_report(statuses, thresholds)
+        self.assertTrue(result)
+
+    @patch("urllib.request.urlopen")
+    def test_send_card(self, mock_urlopen):
+        """发送通用卡片"""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b'{"code": 0}'
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_response
+
+        notifier = FeishuNotifier("https://test.webhook")
+        result = notifier.send_card(
+            title="测试卡片",
+            elements=[
+                {"tag": "div", "text": {"tag": "lark_md", "content": "内容"}},
+            ],
+            footer="测试",
+            header_color="blue",
+        )
+        self.assertTrue(result)

@@ -6,7 +6,8 @@ import hashlib
 import base64
 import urllib.request
 import urllib.error
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
+from datetime import datetime
 
 
 class FeishuNotifier:
@@ -72,6 +73,190 @@ class FeishuNotifier:
             content["card"]["elements"].append(
                 {"tag": "hr"}
             )
+            content["card"]["elements"].append(
+                {"tag": "note", "elements": [{"tag": "plain_text", "content": footer}]}
+            )
+
+        return self._send(content)
+
+    def send_report(
+        self,
+        statuses: List[Any],
+        thresholds: Dict[str, int],
+        title: str = "Keeper 服务器巡检报告",
+    ) -> bool:
+        """发送 Markdown 格式巡检报告到飞书群
+
+        生成与导出报告一致的 Markdown 内容，通过交互式卡片发送。
+
+        Args:
+            statuses: ServerStatus 列表
+            thresholds: 阈值配置 {"cpu": 80, "memory": 85, "disk": 90}
+            title: 卡片标题
+
+        Returns:
+            是否发送成功
+        """
+        total = len(statuses)
+        healthy = 0
+        warning = 0
+        failed = 0
+
+        for s in statuses:
+            if s.ssh_failed:
+                failed += 1
+            elif (s.cpu_percent < thresholds.get("cpu", 80) and
+                  s.memory_percent < thresholds.get("memory", 85) and
+                  s.disk_percent < thresholds.get("disk", 90)):
+                healthy += 1
+            else:
+                warning += 1
+
+        # 根据结果确定卡片颜色
+        if failed > 0:
+            header_color = "red"
+        elif warning > 0:
+            header_color = "orange"
+        else:
+            header_color = "green"
+
+        # 生成完整的 Markdown 内容
+        md_lines = []
+
+        # 汇总
+        md_lines.append(f"**巡检时间**：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        md_lines.append(f"**巡检主机**：{total} 台")
+        md_lines.append("")
+        md_lines.append(f"**汇总**：🟢 健康 **{healthy}** 台 | 🟡 警告 **{warning}** 台 | 🔴 失败 **{failed}** 台")
+        md_lines.append("")
+
+        # 主机列表表格
+        md_lines.append("| 主机 | CPU% | 内存% | 磁盘% | 负载 | 状态 |")
+        md_lines.append("|------|------|-------|-------|------|------|")
+
+        for s in statuses:
+            if s.ssh_failed:
+                md_lines.append(f"| {s.host} | - | - | - | - | ❌ 失败 |")
+            else:
+                cpu_ok = s.cpu_percent < thresholds.get("cpu", 80)
+                mem_ok = s.memory_percent < thresholds.get("memory", 85)
+                disk_ok = s.disk_percent < thresholds.get("disk", 90)
+
+                cpu_tag = f"{s.cpu_percent:.1f}%"
+                mem_tag = f"{s.memory_percent:.1f}%"
+                disk_tag = f"{s.disk_percent:.1f}%"
+
+                if not cpu_ok:
+                    cpu_tag = f"**{s.cpu_percent:.1f}%** ⚠️"
+                if not mem_ok:
+                    mem_tag = f"**{s.memory_percent:.1f}%** ⚠️"
+                if not disk_ok:
+                    disk_tag = f"**{s.disk_percent:.1f}%** ⚠️"
+
+                health_tag = "✅" if (cpu_ok and mem_ok and disk_ok) else "⚠️"
+                md_lines.append(
+                    f"| {s.host} | {cpu_tag} | {mem_tag} | {disk_tag} | {s.load_avg_1m:.2f} | {health_tag} |"
+                )
+
+        md_lines.append("")
+
+        # 详细信息（前 3 台）
+        success_statuses = [s for s in statuses if not s.ssh_failed]
+        if success_statuses:
+            md_lines.append("---")
+            md_lines.append("")
+
+            for s in success_statuses[:3]:
+                cpu_ok = s.cpu_percent < thresholds.get("cpu", 80)
+                mem_ok = s.memory_percent < thresholds.get("memory", 85)
+                disk_ok = s.disk_percent < thresholds.get("disk", 90)
+
+                md_lines.append(f"**{s.host}**")
+                md_lines.append("")
+                md_lines.append(f"  CPU:  {s.cpu_percent:.1f}%  {'✅' if cpu_ok else '⚠️'}")
+                md_lines.append(f"  内存：{s.memory_percent:.1f}% ({s.memory_used_gb:.1f}/{s.memory_total_gb:.1f} GB)  {'✅' if mem_ok else '⚠️'}")
+                md_lines.append(f"  磁盘：{s.disk_percent:.1f}% ({s.disk_used_gb:.1f}/{s.disk_total_gb:.1f} GB)  {'✅' if disk_ok else '⚠️'}")
+                md_lines.append(f"  负载：{s.load_avg_1m:.2f}")
+                md_lines.append(f"  开机：{s.boot_time}")
+                if s.top_processes:
+                    top3 = ", ".join(f"{p['name']}({p['memory_percent']:.1f}%)" for p in s.top_processes[:3])
+                    md_lines.append(f"  Top：{top3}")
+                md_lines.append("")
+
+        # 失败主机
+        if failed:
+            md_lines.append("---")
+            md_lines.append("")
+            md_lines.append("**❌ 采集失败主机：**")
+            for s in statuses:
+                if s.ssh_failed:
+                    md_lines.append(f"  • {s.host}")
+            md_lines.append("")
+
+        # 异常提醒
+        warning_hosts = [s for s in statuses if not s.ssh_failed and (
+            s.cpu_percent >= thresholds.get("cpu", 80) or
+            s.memory_percent >= thresholds.get("memory", 85) or
+            s.disk_percent >= thresholds.get("disk", 90)
+        )]
+        if warning_hosts:
+            md_lines.append("**⚠️ 异常提醒：**")
+            for s in warning_hosts:
+                issues = []
+                if s.cpu_percent >= thresholds.get("cpu", 80):
+                    issues.append(f"CPU {s.cpu_percent:.1f}% (阈值 {thresholds.get('cpu', 80)}%)")
+                if s.memory_percent >= thresholds.get("memory", 85):
+                    issues.append(f"内存 {s.memory_percent:.1f}% (阈值 {thresholds.get('memory', 85)}%)")
+                if s.disk_percent >= thresholds.get("disk", 90):
+                    issues.append(f"磁盘 {s.disk_percent:.1f}% (阈值 {thresholds.get('disk', 90)}%)")
+                md_lines.append(f"  • **{s.host}**：{'；'.join(issues)}")
+            md_lines.append("")
+
+        # 发送为 Markdown 卡片
+        elements = [
+            {"tag": "div", "text": {"tag": "lark_md", "content": "\n".join(md_lines)}},
+        ]
+
+        footer = f"Keeper 智能运维 · Generated by Keeper v0.4.0-dev"
+
+        return self.send_card(
+            title=title,
+            elements=elements,
+            footer=footer,
+            header_color=header_color,
+        )
+
+    def send_card(
+        self,
+        title: str,
+        elements: List[Dict],
+        footer: Optional[str] = None,
+        header_color: str = "blue",
+    ) -> bool:
+        """发送通用交互式卡片
+
+        Args:
+            title: 卡片标题
+            elements: 卡片元素列表（div, hr, note, image 等）
+            footer: 底部备注文字
+            header_color: 卡片头部颜色 (red/orange/green/blue/yellow/purple)
+
+        Returns:
+            是否发送成功
+        """
+        content = {
+            "msg_type": "interactive",
+            "card": {
+                "header": {
+                    "title": {"tag": "plain_text", "content": title},
+                    "template": header_color,
+                },
+                "elements": elements,
+            },
+        }
+
+        if footer:
+            content["card"]["elements"].append({"tag": "hr"})
             content["card"]["elements"].append(
                 {"tag": "note", "elements": [{"tag": "plain_text", "content": footer}]}
             )

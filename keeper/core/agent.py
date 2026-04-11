@@ -43,6 +43,7 @@ class Agent:
         self.scheduler = TaskScheduler(config_dir=self.config.config_dir)
         self.scheduler.set_callback(self._execute_scheduled_task)
         self.scheduler.start()
+        self._last_inspect_statuses: Optional[List] = None  # 缓存最近巡检结果
 
     def process(self, user_input: str) -> str:
         """处理用户输入
@@ -189,6 +190,7 @@ class Agent:
             # 批量巡检
             try:
                 statuses = ServerTools.inspect_multiple_hosts(hosts)
+                self._last_inspect_statuses = statuses
                 report = format_batch_report(statuses, thresholds)
 
                 # 更新上下文
@@ -202,6 +204,7 @@ class Agent:
 
         try:
             status = ServerTools.inspect_server(target_host)
+            self._last_inspect_statuses = [status]
             report = format_status_report(status, thresholds)
 
             # 更新上下文
@@ -852,11 +855,27 @@ class Agent:
         output_path = f"./keeper_report_{timestamp}.{ext}"
 
         if export_fmt == "json":
-            return ReportExporter.export_json(statuses, thresholds, output_path)
+            result = ReportExporter.export_json(statuses, thresholds, output_path)
         elif export_fmt == "html":
-            return ReportExporter.export_html(statuses, thresholds, output_path)
+            result = ReportExporter.export_html(statuses, thresholds, output_path)
         else:
-            return ReportExporter.export_markdown(statuses, thresholds, output_path)
+            result = ReportExporter.export_markdown(statuses, thresholds, output_path)
+
+        # 缓存巡检结果供通知使用
+        self._last_inspect_statuses = statuses
+
+        # 如果配置了飞书 Webhook，发送报告摘要卡片
+        nc = self.config.get_notification_config()
+        webhook = nc.get("feishu_webhook")
+        if webhook:
+            notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
+            notifier.send_report(
+                statuses=statuses,
+                thresholds=thresholds,
+                title=f"Keeper 巡检报告 ({export_fmt.upper()})",
+            )
+
+        return result
 
     def _handle_chat(self, entities: Dict[str, Any]) -> str:
         """处理闲聊意图（备用，正常情况下不会走到这里）"""
@@ -1924,7 +1943,22 @@ class Agent:
 
         notifier = FeishuNotifier(webhook, nc.get("feishu_secret"))
 
-        # 构建通知标题和内容
+        # 巡检类任务：发送结构化报告卡片
+        inspect_intents = {IntentType.INSPECT, IntentType.K8S_INSPECT, IntentType.DOCKER_INSPECT}
+        if intent in inspect_intents and self._last_inspect_statuses:
+            thresholds = {
+                "cpu": self.config.get_threshold("cpu"),
+                "memory": self.config.get_threshold("memory"),
+                "disk": self.config.get_threshold("disk"),
+            }
+            notifier.send_report(
+                statuses=self._last_inspect_statuses,
+                thresholds=thresholds,
+                title=f"Keeper 服务器巡检报告",
+            )
+            return
+
+        # 其他任务：发送文本摘要卡片
         icon = "🔴" if is_error else "🟢"
         intent_name = intent.value if isinstance(intent, IntentType) else str(intent)
         title = f"{icon} Keeper {intent_name}"

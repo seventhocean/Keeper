@@ -52,10 +52,13 @@ class AppConfig:
     @classmethod
     def from_env(cls) -> "AppConfig":
         """从环境变量加载配置（仅作为默认值）"""
-        return cls(
+        config = cls(
             log_level=os.getenv("KEEPER_LOG_LEVEL", "INFO"),
             llm=LLMConfig.from_env(),
         )
+        # 自动从配置文件加载（覆盖默认值）
+        config.load()
+        return config
 
     @property
     def config_dir(self) -> Path:
