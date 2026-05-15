@@ -171,7 +171,14 @@ class HybridAgent:
 
     def _handle_slash_command(self, cmd: str) -> str:
         """处理斜杠命令"""
-        cmd = cmd.strip().lower()
+        cmd_raw = cmd.strip()
+        cmd_lower = cmd_raw.lower()
+
+        # /memory 支持参数，不能完全 lowercase（主机名/关键词可能大小写敏感）
+        if cmd_lower == "/memory" or cmd_lower == "/记忆" or cmd_lower.startswith("/memory "):
+            return self._handle_memory_command(cmd_raw)
+
+        cmd = cmd_lower
 
         if cmd in ("/clear", "/reset"):
             if self._agent_loop:
@@ -192,14 +199,107 @@ class HybridAgent:
             mode = self._agent_loop.active_mode if self._agent_loop else "未初始化"
             return f"[系统] 当前模式: Agent Loop ({mode})"
 
-        if cmd in ("/memory", "/记忆"):
-            return self.memory.format_recent(5)
+        if cmd in ("/memory", "/记忆") or cmd.startswith("/memory "):
+            return self._handle_memory_command(cmd)
 
         if cmd in ("/plugins", "/插件"):
             from .plugins import format_plugins_info
             return format_plugins_info()
 
         return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory /plugins"
+
+    def _handle_memory_command(self, cmd: str) -> str:
+        """处理 /memory 命令（支持筛选参数）
+
+        用法：
+          /memory              — 显示最近 5 条
+          /memory 10           — 显示最近 10 条
+          /memory --host xxx   — 按主机筛选
+          /memory --cat xxx    — 按类别筛选 (inspect/network/k8s/security/docker/fix)
+          /memory --search xxx — 按关键词搜索
+          /memory --date 2026-05-15 — 按日期筛选
+        """
+        parts = cmd.strip().split()
+        # 去掉 /memory 本身
+        args = parts[1:] if len(parts) > 1 else []
+
+        if not args:
+            return self.memory.format_recent(5)
+
+        # 解析参数
+        host_filter = None
+        cat_filter = None
+        search_kw = None
+        date_filter = None
+        count = 10
+
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("--host", "-h") and i + 1 < len(args):
+                host_filter = args[i + 1]
+                i += 2
+            elif arg in ("--cat", "--category", "-c") and i + 1 < len(args):
+                cat_filter = args[i + 1]
+                i += 2
+            elif arg in ("--search", "--keyword", "-s", "-k") and i + 1 < len(args):
+                search_kw = args[i + 1]
+                i += 2
+            elif arg in ("--date", "-d") and i + 1 < len(args):
+                date_filter = args[i + 1]
+                i += 2
+            elif arg.isdigit():
+                count = int(arg)
+                i += 1
+            else:
+                # 当作搜索关键词
+                search_kw = arg
+                i += 1
+
+        # 执行筛选
+        if search_kw:
+            entries = self.memory.search(search_kw, limit=count)
+        elif host_filter:
+            entries = self.memory.get_host_history(host_filter, limit=count)
+        else:
+            entries = self.memory.get_recent(count)
+
+        # 二次过滤：按类别
+        if cat_filter:
+            entries = [e for e in entries if e.category == cat_filter]
+
+        # 二次过滤：按日期
+        if date_filter:
+            entries = [e for e in entries if e.timestamp.startswith(date_filter)]
+
+        if not entries:
+            hints = []
+            if host_filter:
+                hints.append(f"主机={host_filter}")
+            if cat_filter:
+                hints.append(f"类别={cat_filter}")
+            if search_kw:
+                hints.append(f"关键词={search_kw}")
+            if date_filter:
+                hints.append(f"日期={date_filter}")
+            filter_desc = ", ".join(hints) if hints else "无"
+            return f"[Agent 记忆] 未找到匹配记录 (筛选: {filter_desc})"
+
+        # 格式化输出
+        lines = [f"[Agent 记忆] 匹配 {len(entries)} 条记录:"]
+        lines.append("━" * 50)
+        for i_idx, entry in enumerate(entries, 1):
+            time_str = entry.timestamp[:16].replace("T", " ")
+            tools_str = ", ".join(entry.tools_used[:3])
+            cat_str = f" [{entry.category}]" if entry.category else ""
+            host_str = f" @{entry.host}" if entry.host else ""
+            lines.append(f"  {i_idx}. [{time_str}]{cat_str}{host_str} {entry.user_input[:50]}")
+            lines.append(f"     工具: {tools_str}")
+            lines.append(f"     结论: {entry.conclusion[:80]}")
+        lines.append("━" * 50)
+        lines.append(f"共 {self.memory.count} 条记忆 | 显示 {len(entries)} 条")
+        lines.append("筛选: /memory --host <ip> | --cat <类别> | --search <关键词> | --date <YYYY-MM-DD>")
+        return "\n".join(lines)
 
     def _handle_fast_path(self, intent: IntentType, entities: dict) -> str:
         """处理 Fast Path 意图"""
