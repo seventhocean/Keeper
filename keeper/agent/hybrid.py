@@ -46,7 +46,7 @@ class HybridAgent:
     def agent_loop(self) -> AgentLoop:
         """延迟初始化 Agent Loop"""
         if self._agent_loop is None:
-            self._agent_loop = AgentLoop(self.config.llm, mode="auto")
+            self._agent_loop = AgentLoop(self.config.llm, mode="auto", tool_mode="free")
         return self._agent_loop
 
     def set_stream_callback(self, callback: Callable):
@@ -117,8 +117,9 @@ class HybridAgent:
             return "(无执行记录)"
 
         if cmd in ("/tools", "/能力"):
+            from .free_tools import get_free_tools_description
             from .tools_registry import get_tools_description
-            return get_tools_description()
+            return get_free_tools_description() + "\n" + get_tools_description()
 
         if cmd in ("/mode", "/状态"):
             mode = self._agent_loop.active_mode if self._agent_loop else "未初始化"
@@ -182,26 +183,28 @@ class HybridAgent:
 
     def _get_help_text(self) -> str:
         """帮助信息"""
-        from .tools_registry import get_tools_description
-        return f"""[Keeper Agent 模式]
+        from .free_tools import get_free_tools_description
+        return f"""[Keeper Agent 模式 — 自由模式]
 
-我是智能运维助手，你可以用自然语言描述任何运维需求：
+我是智能运维助手，拥有和运维工程师一样的服务器操作能力。
 
-💬 示例问题：
-  • "服务器最近很慢，帮我看看"
-  • "检查 K8s 集群有没有异常"
-  • "nginx 为什么返回 502？"
-  • "测试一下 8.8.8.8 的延迟"
-  • "查看 mysql 最近的错误日志"
-  • "这台机器安全吗？帮我检查"
+💬 你可以直接说：
+  • "帮我看看 CPU 为什么高"
+  • "查看 /etc/nginx/nginx.conf 的配置"
+  • "找一下哪个日志文件有 error"
+  • "重启一下 nginx 服务"
+  • "磁盘满了，帮我清理一下"
+  • "看看 docker 有什么容器在跑"
+
+我会自己执行命令、读取文件、分析结果，直到解决问题。
+
+{get_free_tools_description()}
 
 ⚡ 特殊命令：
   /clear   — 清空对话历史
   /history — 查看上次执行详情
   /tools   — 列出所有可用工具
   /mode    — 查看当前运行模式
-
-{get_tools_description()}
 """
 
     def _log_audit(self, mode: str, intent: str, entities: dict, response: str, start_time: float):

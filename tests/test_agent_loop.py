@@ -160,8 +160,8 @@ class TestSystemPrompt:
     def test_prompt_contains_patterns(self):
         """应包含排查模式"""
         assert "CPU" in AGENT_SYSTEM_PROMPT
-        assert "ping" in AGENT_SYSTEM_PROMPT
-        assert "K8s" in AGENT_SYSTEM_PROMPT
+        assert "bash" in AGENT_SYSTEM_PROMPT or "run_bash" in AGENT_SYSTEM_PROMPT
+        assert "服务" in AGENT_SYSTEM_PROMPT
 
 
 if __name__ == "__main__":

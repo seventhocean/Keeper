@@ -17,6 +17,7 @@ from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 
 from .tools_registry import ALL_TOOLS, LANGCHAIN_AVAILABLE
+from .free_tools import FREE_TOOLS
 
 
 # ─── 检测可用的 Agent 框架 ─────────────────────────────────────
@@ -31,35 +32,42 @@ if LANGCHAIN_AVAILABLE:
 
 # ─── System Prompt ───────────────────────────────────────────────
 
-AGENT_SYSTEM_PROMPT = """你是 Keeper，一个专业的智能运维 Agent。
+AGENT_SYSTEM_PROMPT = """你是 Keeper，一个专业的智能运维 Agent。你拥有和资深 Linux 运维工程师一样的能力。
 
-## 你的工作方式
-你通过调用工具来收集信息、诊断问题、执行操作。面对用户的问题：
-1. 先分析需要什么信息
-2. 调用合适的工具获取数据
-3. 根据数据分析问题
-4. 如果需要更多信息，继续调用工具
-5. 最终给出完整的分析和建议
+## 你的核心能力
+你可以通过工具直接操作服务器：
+- **run_bash**: 执行任意 bash 命令（ps, df, cat, grep, systemctl, docker, kubectl...）
+- **read_file**: 读取任何文件（配置文件、日志、代码）
+- **write_file**: 修改或创建文件（修改配置、写脚本）
+- **list_directory**: 浏览文件系统
+- **search_files**: 在文件中搜索内容
+
+## 工作方式
+像一个真正的运维工程师一样工作：
+1. 用户描述问题 → 你分析需要什么信息
+2. 执行命令收集数据 → 查看输出结果
+3. 如果信息不够 → 继续执行更多命令
+4. 分析所有数据 → 给出结论和建议
+5. 如果需要修复 → 提出具体操作方案
 
 ## 重要原则
-- **先观察再判断**：不要没收集数据就下结论
-- **逐步排查**：从大方向缩小到具体问题
-- **关联分析**：结合多个数据源交叉验证
-- **安全优先**：不执行破坏性操作，除非用户明确确认
-- **简洁清晰**：使用结构化格式输出，重要信息高亮
+- **先诊断再操作**：收集足够信息后才下结论
+- **逐步排查**：从宽到窄缩小问题范围
+- **解释你的思路**：让用户知道你在做什么、为什么
+- **安全优先**：破坏性操作前说明风险
+- **给出完整方案**：不只是发现问题，还要给修复建议
 
-## 排查模式参考
-- CPU 高 → inspect_server → get_top_processes → query_system_logs(unit=异常进程)
-- 服务不可达 → ping_host → check_port → query_system_logs(unit=服务名)
-- K8s Pod 异常 → k8s_cluster_inspect → k8s_pod_logs
-- 网络问题 → ping_host → dns_lookup → check_port
-- 安全审计 → scan_ports → check_ssl_cert → query_system_logs(keyword="failed")
+## 排查思路参考
+- CPU 高 → `top -bn1` → 找到进程 → 查对应日志
+- 服务异常 → `systemctl status xxx` → 查日志 `journalctl -u xxx`
+- 磁盘满 → `df -h` → `du -sh /*` → 找大文件
+- 网络不通 → `ping` → `ss -tlnp` → `iptables -L`
+- 容器问题 → `docker ps` → `docker logs xxx`
 
 ## 输出格式
 - 使用中文回复
-- 用标题分隔不同部分
-- 异常/告警信息用 ⚠️ 标记
-- 正常状态用 ✓ 标记
+- 结构化展示（标题、列表）
+- 异常用 ⚠️ 标记
 - 最后给出 [总结] 和 [建议]
 """
 
@@ -98,7 +106,7 @@ class AgentLoop:
     MAX_OUTPUT_LEN = 2000   # 工具输出最大字符数（超出截断）
     MAX_HISTORY_TURNS = 5   # 保留的历史对话轮数
 
-    def __init__(self, llm_config, mode: str = "auto"):
+    def __init__(self, llm_config, mode: str = "auto", tool_mode: str = "free"):
         """初始化 Agent Loop
 
         Args:
@@ -107,14 +115,30 @@ class AgentLoop:
                 - "auto": 自动选择最佳模式
                 - "langgraph": 强制 LangGraph
                 - "manual": 强制手动 ReAct
+            tool_mode: 工具集模式
+                - "free": 自由模式（run_bash + read_file + write_file，像 Claude Code）
+                - "routed": 路由模式（18 个预注册运维工具）
+                - "all": 全部工具（自由 + 路由）
         """
         self.llm_config = llm_config
         self.requested_mode = mode
+        self.tool_mode = tool_mode
         self.active_mode: Optional[str] = None
         self._agent = None
         self._llm = None
         self.conversation_history: List[Dict[str, str]] = []
         self.last_turn: Optional[AgentTurn] = None
+
+    def _get_tools(self):
+        """根据 tool_mode 获取工具列表"""
+        if self.tool_mode == "free":
+            return FREE_TOOLS
+        elif self.tool_mode == "routed":
+            return ALL_TOOLS
+        elif self.tool_mode == "all":
+            return FREE_TOOLS + ALL_TOOLS
+        else:
+            return FREE_TOOLS
 
     def _detect_mode(self) -> str:
         """自动检测可用模式"""
@@ -168,13 +192,13 @@ class AgentLoop:
         from langgraph.prebuilt import create_react_agent
         return create_react_agent(
             model=self.llm,
-            tools=ALL_TOOLS,
+            tools=self._get_tools(),
             state_modifier=AGENT_SYSTEM_PROMPT,
         )
 
     def _create_manual_agent(self):
         """方式 2：手动 ReAct（LLM + bind_tools）"""
-        return self.llm.bind_tools(ALL_TOOLS)
+        return self.llm.bind_tools(self._get_tools())
 
     def run(self, user_input: str, stream_callback: Optional[Callable] = None) -> str:
         """执行一轮 Agent Loop
@@ -275,7 +299,7 @@ class AgentLoop:
         messages.append(HumanMessage(content=user_input))
 
         # 工具查找表
-        tool_map = {t.name: t for t in ALL_TOOLS}
+        tool_map = {t.name: t for t in self._get_tools()}
 
         if callback:
             callback("  🤔 Agent 分析中...\n")
