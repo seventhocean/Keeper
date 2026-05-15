@@ -1,0 +1,34 @@
+name: service_restart
+description: 服务安全重启流程（检查→重启→验证）
+variables:
+  service_name: nginx
+  wait_seconds: 5
+tags: [service, restart]
+
+steps:
+  - name: 检查服务当前状态
+    action: shell
+    command: "systemctl status {{service_name}} --no-pager"
+    safety: safe
+    timeout: 10
+
+  - name: 重启服务
+    action: shell
+    command: "systemctl restart {{service_name}}"
+    safety: caution
+    confirm: true
+    timeout: 30
+    rollback: "systemctl start {{service_name}}"
+
+  - name: 等待服务启动
+    action: shell
+    command: "sleep {{wait_seconds}} && systemctl is-active {{service_name}}"
+    safety: safe
+    timeout: 15
+    expect: "contains active"
+
+  - name: 验证服务正常运行
+    action: shell
+    command: "systemctl status {{service_name}} --no-pager | head -5"
+    safety: safe
+    timeout: 10
