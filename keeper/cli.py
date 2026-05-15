@@ -226,6 +226,11 @@ def start_agent_chat():
     config = AppConfig.from_env()
     config.load()
 
+    # 安装优雅停机
+    from .utils.shutdown import get_shutdown_manager
+    shutdown = get_shutdown_manager()
+    shutdown.install()
+
     # 检查 API Key — 不退出，交互式引导配置
     if not config.is_llm_configured():
         click.echo(click.style("\n⚡ 首次使用？需要配置 LLM API Key。", fg='yellow'))
@@ -240,6 +245,17 @@ def start_agent_chat():
     agent = HybridAgent(config)
     agent.set_stream_callback(_create_stream_callback())
 
+    # 注册清理函数（优雅停机时执行）
+    def _cleanup():
+        agent.state.is_running = False
+        # 保存未持久化的记忆
+        try:
+            agent.memory._save()
+        except Exception:
+            pass
+
+    shutdown.register(_cleanup)
+
     click.echo(AGENT_BANNER, color=True)
     if config.is_llm_configured():
         click.echo(click.style("🤖 Keeper Agent 模式已启动", fg='green'))
@@ -250,6 +266,11 @@ def start_agent_chat():
 
     while agent.state.is_running:
         try:
+            # 检查是否收到关闭信号
+            if shutdown.is_shutting_down:
+                click.echo(click.style("\n👋 再见！", fg='green'))
+                break
+
             user_input = prompt(
                 [('class:prompt', 'keeper🤖> ')],
                 style=STYLE,
@@ -264,6 +285,8 @@ def start_agent_chat():
             click.echo(f"\n{response}\n")
 
         except KeyboardInterrupt:
+            # 第一次 Ctrl+C：提示用户
+            click.echo(click.style("\n(按 Ctrl+C 再次退出，或输入 '退出')", fg='yellow'))
             continue
         except EOFError:
             click.echo(click.style("\n👋 再见！", fg='green'))
