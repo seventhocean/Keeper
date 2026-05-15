@@ -5,8 +5,7 @@
 - 白名单命令应通过
 - 灰名单命令应需要确认
 """
-import sys
-sys.path.insert(0, ".")
+import pytest
 
 from keeper.agent.safety import (
     CommandSafetyChecker,
