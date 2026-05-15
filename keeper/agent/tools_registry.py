@@ -97,6 +97,16 @@ def inspect_server(host: str = "localhost") -> str:
         except Exception:
             pass  # 告警失败不影响巡检结果
 
+        # 自动追加与上次对比信息（如有历史数据）
+        try:
+            from keeper.tools.comparator import InspectionComparator
+            comparator = InspectionComparator()
+            comp_report = comparator.compare_with_last(host)
+            if comp_report and any(d.warning for d in comp_report.diffs):
+                report += f"\n\n📊 与上次对比: {comp_report.summary}"
+        except Exception:
+            pass
+
         return report
     except Exception as e:
         return f"[错误] 服务器巡检失败 ({host}): {str(e)}"
@@ -707,6 +717,70 @@ def runbook_log_rotate(log_path: str = "/var/log") -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+# 巡检对比 & 容量预测
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def compare_inspection(host: str = "localhost") -> str:
+    """对比当前巡检结果与上次巡检的差异，显示各指标变化趋势。
+
+    当用户问"和上次对比变化大吗"、"最近趋势怎样"、"CPU 是不是涨了"时使用此工具。
+
+    Args:
+        host: 主机地址，默认 localhost
+
+    Returns:
+        巡检对比报告（包含 CPU/内存/磁盘/负载的变化）
+    """
+    try:
+        from keeper.tools.comparator import InspectionComparator
+        comparator = InspectionComparator()
+
+        report = comparator.compare_with_last(host)
+        if report is None:
+            return f"[巡检对比] {host} 历史数据不足（需要至少 2 次巡检记录）。\n请先执行一次 inspect_server 采集数据。"
+
+        formatted = comparator.format_comparison(report)
+
+        # 追加 7 天趋势
+        trend = comparator.get_trend(host, hours=168)
+        if trend:
+            formatted += "\n\n[7 天趋势]\n"
+            for metric, info in trend.items():
+                arrow = "↑" if info["trend"] == "up" else "↓"
+                formatted += f"  {metric}: 均值 {info['avg']}% | 峰值 {info['max']}% | 趋势 {arrow}\n"
+
+        return formatted
+    except Exception as e:
+        return f"[错误] 巡检对比失败: {str(e)}"
+
+
+@tool
+def predict_capacity(host: str = "localhost") -> str:
+    """基于历史数据预测磁盘/内存何时达到阈值，给出容量规划建议。
+
+    当用户问"磁盘还能用多久"、"容量预测"、"什么时候会满"时使用此工具。
+
+    Args:
+        host: 主机地址，默认 localhost
+
+    Returns:
+        各指标的容量预测报告（含预计达到阈值的天数）
+    """
+    try:
+        from keeper.tools.capacity import CapacityPredictor
+        predictor = CapacityPredictor()
+        predictions = predictor.predict(host)
+
+        if not predictions:
+            return f"[容量预测] {host} 历史数据不足（需要至少 7 天的巡检记录）。\n请持续使用 inspect_server 采集数据。"
+
+        return predictor.format_predictions(predictions)
+    except Exception as e:
+        return f"[错误] 容量预测失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
 # 工具注册表 — Agent Loop 使用此列表
 # ═══════════════════════════════════════════════════════════════
 
@@ -740,6 +814,9 @@ ALL_TOOLS = [
     runbook_disk_cleanup,
     runbook_service_restart,
     runbook_log_rotate,
+    # 巡检对比 & 容量预测
+    compare_inspection,
+    predict_capacity,
     # 通用
     execute_shell_command,
 ]
