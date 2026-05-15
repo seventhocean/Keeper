@@ -1,0 +1,421 @@
+"""工具注册中心 — 将所有运维工具注册为 LLM 可调用的 Tool
+
+设计理念：
+- 每个 @tool 装饰的函数就是一个 LLM 可以自主调用的能力
+- LLM 根据 docstring 理解工具用途，自动决定何时调用
+- 类似 Claude Code 的 Tool Use 机制
+"""
+import subprocess
+from typing import Optional, List
+from langchain_core.tools import tool
+
+
+# ═══════════════════════════════════════════════════════════════
+# 服务器监控类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def inspect_server(host: str = "localhost") -> str:
+    """检查服务器资源状态，包括 CPU、内存、磁盘使用率、系统负载和 Top 进程。
+
+    Args:
+        host: 目标主机 IP 或 hostname，默认检查本机 (localhost)
+
+    Returns:
+        格式化的服务器状态报告
+    """
+    from ..tools.server import ServerTools, format_status_report
+    try:
+        status = ServerTools.inspect_server(host)
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+        return format_status_report(status, thresholds)
+    except Exception as e:
+        return f"[错误] 服务器巡检失败 ({host}): {str(e)}"
+
+
+@tool
+def get_top_processes(n: int = 10) -> str:
+    """获取当前系统资源占用最高的进程列表（按 CPU + 内存排序）
+
+    Args:
+        n: 返回的进程数量，默认 10
+
+    Returns:
+        Top N 进程列表（PID、名称、CPU%、内存%）
+    """
+    from ..tools.server import ServerTools
+    try:
+        processes = ServerTools.get_top_processes(n)
+        if not processes:
+            return "未获取到进程信息"
+        lines = [f"{'PID':<8} {'进程名':<20} {'CPU%':<8} {'MEM%':<8}"]
+        lines.append("-" * 50)
+        for p in processes:
+            lines.append(
+                f"{p['pid']:<8} {p['name']:<20} {p['cpu_percent']:<8.1f} {p['memory_percent']:<8.1f}"
+            )
+        return "\n".join(lines)
+    except Exception as e:
+        return f"[错误] 获取进程信息失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 日志查询类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def query_system_logs(
+    lines: int = 50,
+    unit: Optional[str] = None,
+    since: Optional[str] = None,
+    keyword: Optional[str] = None,
+    priority: Optional[str] = None,
+) -> str:
+    """查询系统日志（基于 journalctl）
+
+    Args:
+        lines: 返回的日志行数，默认 50
+        unit: systemd 服务名称过滤 (如 nginx, mysql, docker, sshd)
+        since: 时间范围过滤 (如 "1 hour ago", "today", "2026-05-15")
+        keyword: 关键词过滤（大小写不敏感）
+        priority: 日志级别过滤 (emerg/alert/crit/err/warning/notice/info/debug)
+
+    Returns:
+        匹配的日志内容
+    """
+    from ..tools.logs import LogTools
+    try:
+        success, output = LogTools.query_journal(
+            lines=lines, unit=unit, since=since,
+            keyword=keyword, priority=priority,
+        )
+        if success:
+            return output if output.strip() else "(日志为空，未找到匹配记录)"
+        return f"日志查询失败: {output}"
+    except Exception as e:
+        return f"[错误] 日志查询异常: {str(e)}"
+
+
+@tool
+def read_log_file(file_path: str, lines: int = 50, keyword: Optional[str] = None) -> str:
+    """读取指定日志文件的最后 N 行（支持关键词过滤）
+
+    Args:
+        file_path: 日志文件路径 (如 /var/log/nginx/error.log)
+        lines: 读取的行数，默认最后 50 行
+        keyword: 关键词过滤
+
+    Returns:
+        日志文件内容
+    """
+    from ..tools.logs import LogTools
+    try:
+        success, output = LogTools.read_file(file_path, lines=lines, keyword=keyword)
+        return output if success else f"读取失败: {output}"
+    except Exception as e:
+        return f"[错误] 读取日志文件失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 网络诊断类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def ping_host(host: str, count: int = 4) -> str:
+    """对目标主机执行 Ping 测试，检查网络连通性和延迟
+
+    Args:
+        host: 目标主机 IP 或域名
+        count: 发送的 ICMP 包数量，默认 4
+
+    Returns:
+        Ping 测试结果（丢包率、延迟等）
+    """
+    from ..tools.network import NetworkTools, format_ping_result
+    try:
+        result = NetworkTools.ping(host, count=count)
+        return format_ping_result(result)
+    except Exception as e:
+        return f"[错误] Ping 失败: {str(e)}"
+
+
+@tool
+def check_port(host: str, port: int) -> str:
+    """检查目标主机的指定端口是否开放
+
+    Args:
+        host: 目标主机 IP 或域名
+        port: 要检查的端口号
+
+    Returns:
+        端口状态（开放/关闭/超时）
+    """
+    from ..tools.network import NetworkTools, format_port_result
+    try:
+        result = NetworkTools.check_port(host, port)
+        return format_port_result(result)
+    except Exception as e:
+        return f"[错误] 端口检测失败: {str(e)}"
+
+
+@tool
+def dns_lookup(domain: str) -> str:
+    """查询域名的 DNS 解析记录
+
+    Args:
+        domain: 要查询的域名
+
+    Returns:
+        DNS 解析结果（A记录、CNAME等）
+    """
+    from ..tools.network import NetworkTools, format_dns_result
+    try:
+        result = NetworkTools.dns_lookup(domain)
+        return format_dns_result(result)
+    except Exception as e:
+        return f"[错误] DNS 查询失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# K8s 集群管理类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def k8s_cluster_inspect(namespace: Optional[str] = None) -> str:
+    """对 K8s 集群执行全面巡检，检查节点、Pod、工作负载、服务、存储等状态
+
+    Args:
+        namespace: 指定 namespace 过滤，为空则检查所有 namespace
+
+    Returns:
+        K8s 集群巡检报告（包含异常检测和健康评分）
+    """
+    try:
+        from ..tools.k8s.client import K8sClient
+        from ..tools.k8s.inspector import K8sInspector
+        from ..tools.k8s.formatter import format_cluster_report
+
+        client = K8sClient()
+        success, msg = client.connect()
+        if not success:
+            return f"K8s 连接失败: {msg}"
+
+        inspector = K8sInspector(client)
+        report = inspector.full_inspect(namespace=namespace)
+        return format_cluster_report(report, namespace=namespace)
+    except ImportError:
+        return "[错误] kubernetes SDK 未安装，请运行: pip install kubernetes"
+    except Exception as e:
+        return f"[错误] K8s 巡检失败: {str(e)}"
+
+
+@tool
+def k8s_pod_logs(
+    pod_name: str,
+    namespace: str = "default",
+    lines: int = 50,
+    keyword: Optional[str] = None,
+) -> str:
+    """查看 K8s Pod 的日志输出
+
+    Args:
+        pod_name: Pod 名称（支持前缀模糊匹配，如 "nginx" 可匹配 "nginx-xxx-abc"）
+        namespace: 命名空间，默认 "default"
+        lines: 返回的日志行数
+        keyword: 关键词过滤
+
+    Returns:
+        Pod 日志内容
+    """
+    try:
+        from ..tools.k8s.client import K8sClient
+        from ..tools.k8s.logs import K8sLogTools
+
+        client = K8sClient()
+        success, msg = client.connect()
+        if not success:
+            return f"K8s 连接失败: {msg}"
+
+        success, output = K8sLogTools.get_pod_logs(
+            client, pod_name, namespace, lines, keyword
+        )
+        return output
+    except ImportError:
+        return "[错误] kubernetes SDK 未安装"
+    except Exception as e:
+        return f"[错误] 获取 Pod 日志失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# Docker 管理类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def docker_list_containers(all_containers: bool = True, filter_name: Optional[str] = None) -> str:
+    """列出 Docker 容器状态
+
+    Args:
+        all_containers: 是否包含已停止的容器，默认 True
+        filter_name: 按容器名称过滤
+
+    Returns:
+        容器列表（名称、状态、端口映射、运行时间）
+    """
+    from ..tools.docker_tools import DockerTools, format_docker_containers
+    try:
+        if not DockerTools.is_docker_available():
+            return "[错误] Docker 不可用，请检查 Docker 服务是否运行"
+        containers = DockerTools.list_containers(all_containers, filter_name)
+        return format_docker_containers(containers)
+    except Exception as e:
+        return f"[错误] Docker 查询失败: {str(e)}"
+
+
+@tool
+def docker_container_logs(container_name: str, lines: int = 50) -> str:
+    """查看 Docker 容器日志
+
+    Args:
+        container_name: 容器名称或 ID
+        lines: 返回的日志行数
+
+    Returns:
+        容器日志内容
+    """
+    try:
+        result = subprocess.run(
+            ["docker", "logs", "--tail", str(lines), container_name],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        return output if output.strip() else f"容器 {container_name} 无日志输出"
+    except subprocess.TimeoutExpired:
+        return "[超时] 获取容器日志超时"
+    except Exception as e:
+        return f"[错误] 获取容器日志失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 安全与证书类工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def scan_ports(host: str) -> str:
+    """扫描目标主机的开放端口，分析服务和安全风险
+
+    Args:
+        host: 目标主机 IP 地址
+
+    Returns:
+        端口扫描结果 + 风险评估
+    """
+    from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
+    try:
+        result = ScannerTools.scan(host)
+        return format_scan_result(result)
+    except NmapNotInstalledError as e:
+        return f"[错误] nmap 未安装: {str(e)}"
+    except Exception as e:
+        return f"[错误] 端口扫描失败: {str(e)}"
+
+
+@tool
+def check_ssl_cert(target: str) -> str:
+    """检查域名的 SSL/TLS 证书状态（过期时间、颁发者、有效性）
+
+    Args:
+        target: 要检查的域名 (如 example.com)
+
+    Returns:
+        证书信息（过期时间、剩余天数、状态）
+    """
+    from ..tools.cert_monitor import CertMonitor, format_cert_report
+    try:
+        monitor = CertMonitor()
+        certs = monitor.check_domain(target)
+        return format_cert_report(certs)
+    except Exception as e:
+        return f"[错误] 证书检查失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 通用 Shell 执行（带安全控制）
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def execute_shell_command(command: str) -> str:
+    """在服务器上执行 Shell 命令。仅允许安全的只读/诊断类命令，危险命令会被拦截。
+
+    适合执行: ps, df, free, top -bn1, netstat, ss, lsof, cat, head, tail, grep, find, systemctl status 等
+
+    Args:
+        command: 要执行的 Shell 命令
+
+    Returns:
+        命令执行输出
+    """
+    from ..tools.fixer import FixSuggester, SafetyLevel
+
+    # 安全等级检查
+    safety = FixSuggester.classify_command_safety(command)
+    if safety == SafetyLevel.DANGEROUS:
+        return f"[安全拦截] 该命令被判定为高危操作，拒绝执行: {command}"
+    if safety == SafetyLevel.DESTRUCTIVE:
+        return f"[需确认] 该命令为破坏性操作，需要用户确认: {command}\n请用户输入 '确认' 后我再执行。"
+
+    try:
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\n[stderr] " + result.stderr
+
+        if not output.strip():
+            return "(命令执行成功，无输出)"
+
+        # 限制输出长度
+        if len(output) > 3000:
+            output = output[:3000] + "\n... (输出过长，已截断)"
+        return output
+    except subprocess.TimeoutExpired:
+        return f"[超时] 命令执行超过 30s: {command}"
+    except Exception as e:
+        return f"[错误] 命令执行失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 工具注册表 — Agent Loop 使用此列表
+# ═══════════════════════════════════════════════════════════════
+
+ALL_TOOLS = [
+    # 服务器监控
+    inspect_server,
+    get_top_processes,
+    # 日志查询
+    query_system_logs,
+    read_log_file,
+    # 网络诊断
+    ping_host,
+    check_port,
+    dns_lookup,
+    # K8s
+    k8s_cluster_inspect,
+    k8s_pod_logs,
+    # Docker
+    docker_list_containers,
+    docker_container_logs,
+    # 安全
+    scan_ports,
+    check_ssl_cert,
+    # 通用
+    execute_shell_command,
+]
+
+
+def get_tools_description() -> str:
+    """获取所有工具的描述（用于展示能力列表）"""
+    lines = ["Keeper 可用工具列表：", "=" * 40]
+    for t in ALL_TOOLS:
+        lines.append(f"  • {t.name}: {t.description.split(chr(10))[0]}")
+    return "\n".join(lines)
