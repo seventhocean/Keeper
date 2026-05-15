@@ -195,7 +195,11 @@ class HybridAgent:
         if cmd in ("/memory", "/记忆"):
             return self.memory.format_recent(5)
 
-        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory"
+        if cmd in ("/plugins", "/插件"):
+            from .plugins import format_plugins_info
+            return format_plugins_info()
+
+        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory /plugins"
 
     def _handle_fast_path(self, intent: IntentType, entities: dict) -> str:
         """处理 Fast Path 意图"""

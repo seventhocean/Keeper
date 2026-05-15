@@ -744,6 +744,15 @@ ALL_TOOLS = [
     execute_shell_command,
 ]
 
+# ─── 加载用户自定义插件工具 ──────────────────────────────────────
+try:
+    from .plugins import discover_plugins
+    _plugin_tools = discover_plugins()
+    if _plugin_tools:
+        ALL_TOOLS.extend(_plugin_tools)
+except Exception:
+    pass  # 插件加载失败不影响主流程
+
 
 def get_tools_description() -> str:
     """获取所有工具的描述（用于展示能力列表）"""
