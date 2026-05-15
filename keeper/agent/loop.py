@@ -32,6 +32,31 @@ if LANGCHAIN_AVAILABLE:
 
 # ─── System Prompt ───────────────────────────────────────────────
 
+def _emit(callback, event):
+    """安全调用回调 — 兼容旧格式 (str) 和新格式 (dict)"""
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except TypeError:
+        # 旧格式: callback(str)
+        if isinstance(event, dict):
+            msg = event.get("message") or event.get("content") or event.get("tool") or ""
+            if event.get("type") == "tool_call":
+                args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
+                msg = f"  🔧 {event['tool']}({args_str})\n"
+            elif event.get("type") == "tool_result":
+                icon = "✓" if event.get("success") else "✗"
+                msg = f" {icon} ({event.get('duration_ms', 0)}ms)\n"
+            elif event.get("type") == "thinking":
+                msg = f"  🤔 {event.get('message', '')}\n"
+            elif event.get("type") == "warning":
+                msg = f"  {event.get('message', '')}\n"
+            elif event.get("type") == "text":
+                msg = event.get("content", "")
+            callback(msg)
+
+
 AGENT_SYSTEM_PROMPT = """你是 Keeper，一个专业的智能运维 Agent。你拥有和资深 Linux 运维工程师一样的能力。
 
 ## 你的核心能力
@@ -240,57 +265,146 @@ class AgentLoop:
     def _run_langgraph(
         self, user_input: str, turn: AgentTurn, callback: Optional[Callable]
     ) -> str:
-        """LangGraph 模式执行"""
+        """LangGraph 流式执行 — 逐步展示 + 错误恢复"""
         from langchain_core.messages import HumanMessage, AIMessage
 
-        # 构建消息（包含历史）
         messages = []
         for h in self.conversation_history[-self.MAX_HISTORY_TURNS:]:
             messages.append(HumanMessage(content=h["user"]))
             messages.append(AIMessage(content=h["assistant"]))
         messages.append(HumanMessage(content=user_input))
 
-        if callback:
-            callback("  🤔 Agent 分析中...\n")
+        _emit(callback, {"type": "thinking", "message": "Agent 分析中..."})
 
-        # 执行
-        result = self.agent.invoke({"messages": messages})
+        last_tool_name = ""
+        consecutive_same = 0
+        all_raw_messages = []
 
-        # 提取工具调用记录
-        for msg in result["messages"]:
-            if hasattr(msg, "tool_calls") and msg.tool_calls:
-                for tc in msg.tool_calls:
-                    tool_call = ToolCall(
-                        tool_name=tc["name"],
-                        args=tc["args"],
-                        result="(见后续消息)",
-                        duration_ms=0,
-                    )
-                    turn.tool_calls.append(tool_call)
-                    if callback:
-                        callback(f"  🔧 {tc['name']}({tc['args']})\n")
-            turn.loop_count += 1
+        try:
+            for chunk in self.agent.stream(
+                {"messages": messages},
+                stream_mode="updates",
+                config={"recursion_limit": 50},
+            ):
+                turn.loop_count += 1
 
-        # 提取最终回复 — 从后往前找第一条有文本内容的消息
+                # Agent 节点: LLM 决策
+                if "agent" in chunk:
+                    agent_out = chunk["agent"]
+                    # LangGraph 1.x: chunk = {"agent": {"messages": [...]}}
+                    inner = agent_out.get("messages", []) if isinstance(agent_out, dict) else []
+                    items = inner if isinstance(inner, list) else [inner] if inner else [agent_out]
+                    if not items:
+                        items = [agent_out]
+
+                    for msg in items:
+                        all_raw_messages.append(msg)
+                        # 兼容 dict 和 Message 对象
+                        if isinstance(msg, dict):
+                            tool_calls = msg.get("tool_calls")
+                            content = msg.get("content", "")
+                            msg_type = msg.get("type", "")
+                        else:
+                            tool_calls = getattr(msg, "tool_calls", None)
+                            content = getattr(msg, "content", "") or ""
+                            msg_type = getattr(msg, "type", "")
+
+                        # 跳过 ToolMessage（它们由 tools 节点处理）
+                        if msg_type == "tool" or (isinstance(msg, dict) and msg.get("type") == "tool"):
+                            continue
+
+                        if tool_calls:
+                            for tc in tool_calls:
+                                if isinstance(tc, dict):
+                                    tname = tc.get("name", "")
+                                    targs = tc.get("args", {})
+                                else:
+                                    tname = getattr(tc, "name", "")
+                                    targs = getattr(tc, "args", {})
+
+                                if tname == last_tool_name:
+                                    consecutive_same += 1
+                                else:
+                                    consecutive_same = 0
+                                last_tool_name = tname
+
+                                if consecutive_same >= 3:
+                                    _emit(callback, {
+                                        "type": "warning",
+                                        "message": f"{tname} 连续调用 {consecutive_same} 次，建议换工具"
+                                    })
+
+                                _emit(callback, {
+                                    "type": "tool_call",
+                                    "tool": tname,
+                                    "args": targs,
+                                })
+
+                                turn.tool_calls.append(ToolCall(
+                                    tool_name=tname, args=targs,
+                                    result="", duration_ms=0,
+                                ))
+
+                # Tools 节点: 工具执行结果
+                elif "tools" in chunk:
+                    tools_out = chunk["tools"]
+                    inner = tools_out.get("messages", []) if isinstance(tools_out, dict) else []
+                    tms = inner if isinstance(inner, list) else [inner] if inner else [tools_out]
+                    for tm in tms:
+                        all_raw_messages.append(tm)
+                        if isinstance(tm, dict):
+                            tc = tm.get("content", "")
+                            tn = tm.get("name", "")
+                        else:
+                            tc = getattr(tm, "content", "")
+                            tn = getattr(tm, "name", "")
+
+                        if not tn:
+                            continue
+
+                        success = not (isinstance(tc, str) and ("[错误]" in tc or "Error" in tc or "[工具执行错误]" in tc))
+                        for prev in reversed(turn.tool_calls):
+                            if prev.tool_name == tn:
+                                prev.result = tc[:500] if isinstance(tc, str) else str(tc)[:500]
+                                prev.success = success
+                                break
+                        _emit(callback, {
+                            "type": "tool_result",
+                            "tool": tn,
+                            "duration_ms": 0,
+                            "success": success,
+                        })
+
+        except Exception as e:
+            _emit(callback, {
+                "type": "warning",
+                "message": f"流式异常: {type(e).__name__}，降级到阻塞模式",
+            })
+            try:
+                final = self.agent.invoke({"messages": messages})
+                all_raw_messages = final["messages"]
+            except Exception:
+                raise e
+
+        # 提取最终回复
         response = ""
-        for msg in reversed(result["messages"]):
-            content = getattr(msg, "content", None)
-            if content and isinstance(content, str) and content.strip():
-                # 跳过只有 tool_calls 没有实质内容的消息
-                has_tool_calls = getattr(msg, "tool_calls", None)
-                if not has_tool_calls or len(content.strip()) > 20:
-                    response = content
+        for msg in reversed(all_raw_messages):
+            ct = msg.get("content", "") if isinstance(msg, dict) else getattr(msg, "content", "")
+            tc = msg.get("tool_calls") if isinstance(msg, dict) else getattr(msg, "tool_calls", None)
+            if ct and isinstance(ct, str) and ct.strip():
+                if not tc or len(ct.strip()) > 20:
+                    response = ct
                     break
 
         if not response:
-            # 无可用的文本回复，基于工具调用生成摘要
-            response = "[Agent] 已完成数据收集，但未生成最终回复。以下为执行摘要：\n"
-            for tc in turn.tool_calls[-5:]:
-                response += f"  • {tc.tool_name}: {tc.result[:150]}\n"
+            response = "[Agent] 已完成数据收集。"
+            if turn.tool_calls:
+                response += "\n"
+                for tc in turn.tool_calls[-3:]:
+                    response += f"  • {tc.tool_name}: {tc.result[:150]}\n"
 
-        # 更新历史
         self._add_history(user_input, response)
-
+        _emit(callback, {"type": "done"})
         return response
 
     def _run_manual(
@@ -314,8 +428,7 @@ class AgentLoop:
         # 工具查找表
         tool_map = {t.name: t for t in self._get_tools()}
 
-        if callback:
-            callback("  🤔 Agent 分析中...\n")
+        _emit(callback, {"type": "thinking", "message": "Agent 分析中..."})
 
         # ReAct 循环
         final_response = ""
@@ -353,18 +466,25 @@ class AgentLoop:
 
                     if consecutive_same_tool >= 3:
                         result = f"[提示] 你已连续调用 {tool_name} 3次，请尝试其他工具或给出结论。"
+                        _emit(callback, {
+                            "type": "warning",
+                            "message": f"{tool_name} 连续调用 {consecutive_same_tool} 次，请尝试其他工具",
+                        })
                     else:
-                        # 通知用户
-                        if callback:
-                            args_str = ", ".join(f"{k}={repr(v)}" for k, v in tool_args.items())
-                            callback(f"  🔧 调用 {tool_name}({args_str})...")
+                        _emit(callback, {
+                            "type": "tool_call",
+                            "tool": tool_name,
+                            "args": tool_args,
+                        })
 
                         # 安全检查
                         from .safety import is_tool_auto_allowed, get_tool_permission
                         if not is_tool_auto_allowed(tool_name):
                             level = get_tool_permission(tool_name)
-                            if callback:
-                                callback(f" ⚠️ 需确认 [{level.value}]\n")
+                            _emit(callback, {
+                                "type": "warning",
+                                "message": f"需确认 [{level.value}]",
+                            })
 
                         # 执行工具
                         t_start = time.time()
@@ -381,8 +501,12 @@ class AgentLoop:
                         if len(result) > self.MAX_OUTPUT_LEN:
                             result = result[:self.MAX_OUTPUT_LEN] + "\n... (输出已截断)"
 
-                        if callback:
-                            callback(f" ✓ ({t_duration}ms)\n")
+                        _emit(callback, {
+                            "type": "tool_result",
+                            "tool": tool_name,
+                            "duration_ms": t_duration,
+                            "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
+                        })
 
                     # 记录
                     turn.tool_calls.append(ToolCall(

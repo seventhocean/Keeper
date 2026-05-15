@@ -156,9 +156,30 @@ def start_agent_chat():
     from .agent.hybrid import HybridAgent
     agent = HybridAgent(config)
 
-    # 流式输出回调
-    def stream_callback(text):
-        click.echo(click.style(text, fg='cyan'), nl=False)
+    # 流式输出回调 — 支持 dict 事件和旧 str 格式
+    def stream_callback(event):
+        if isinstance(event, dict):
+            etype = event.get("type", "")
+            if etype == "thinking":
+                click.echo(click.style(f"  🤔 {event.get('message', '')}", fg='bright_black'), nl=False)
+            elif etype == "tool_call":
+                args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
+                click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+            elif etype == "tool_result":
+                icon = "✓" if event.get("success") else "✗"
+                color = 'green' if event.get("success") else 'red'
+                click.echo(click.style(f" {icon} ({event.get('duration_ms', 0)}ms)", fg=color))
+            elif etype == "text":
+                click.echo(click.style(event.get("content", ""), fg='white'), nl=False)
+            elif etype == "warning":
+                click.echo(click.style(f"  {event.get('message', '')}", fg='yellow'))
+            elif etype == "error":
+                click.echo(click.style(f"  ❌ {event.get('message', '')}", fg='red'))
+            elif etype == "done":
+                pass  # 流式完成
+        else:
+            # 兼容旧 str 格式
+            click.echo(click.style(str(event), fg='cyan'), nl=False)
 
     agent.set_stream_callback(stream_callback)
 
@@ -230,6 +251,21 @@ def run(command, host, profile, full, classic):
         # Agent Loop 模式
         from .agent.hybrid import HybridAgent
         agent = HybridAgent(config)
+
+        def run_callback(event):
+            """单命令模式流式回调 — 简化输出"""
+            if isinstance(event, dict):
+                if event.get("type") == "tool_call":
+                    args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
+                    click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+                elif event.get("type") == "tool_result":
+                    icon = "✓" if event.get("success") else "✗"
+                    click.echo(click.style(f" {icon}", fg='green' if event.get("success") else 'red'))
+                elif event.get("type") == "warning":
+                    click.echo(click.style(f"  ⚠️ {event.get('message', '')}", fg='yellow'))
+                elif event.get("type") == "thinking":
+                    click.echo(click.style("  🤔 ...", fg='bright_black'), nl=False)
+        agent.set_stream_callback(run_callback)
 
     # 处理输入
     try:
