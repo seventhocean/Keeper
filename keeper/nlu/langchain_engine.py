@@ -380,12 +380,19 @@ class LangChainEngine(NLUEngine):
             )
 
         except Exception as e:
-            # LLM 调用失败，返回错误
+            # LLM 调用失败 → 降级到正则模式再试一次
+            degraded = _try_fast_match(user_input)
+            if degraded is not None:
+                # 正则匹配成功，在降级模式下返回
+                degraded.confidence = 0.7  # 降低置信度标记为降级结果
+                return degraded
+
+            # 正则也无法匹配，返回错误
             return ParsedIntent(
                 is_task=False,
                 intent=IntentType.UNKNOWN,
                 raw_input=user_input,
                 confidence=0.0,
-                direct_response=f"[系统错误] NLU 解析失败：{str(e)}",
+                direct_response=f"[降级模式] LLM 不可用({type(e).__name__})，且正则未匹配到意图。\n请尝试更具体的指令，如 '检查本机' 或 '帮助'。",
                 error_message=str(e),
             )

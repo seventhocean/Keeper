@@ -46,6 +46,13 @@ class AppConfig:
     profiles: Dict[str, Any] = field(default_factory=dict)
     k8s: Dict[str, Any] = field(default_factory=dict)  # K8s 集群配置
     notifications: Dict[str, Any] = field(default_factory=dict)  # 通知配置
+    timeouts: Dict[str, int] = field(default_factory=lambda: {
+        "ssh": 30,
+        "k8s": 30,
+        "llm": 60,
+        "network": 10,
+        "shell": 30,
+    })  # 超时配置（秒）
     _config_dir: Optional[Path] = field(default=None, repr=False)
     _config_file: Optional[Path] = field(default=None, repr=False)
 
@@ -86,6 +93,7 @@ class AppConfig:
                     self.profiles = data.get("profiles", {})
                     self.k8s = data.get("k8s", {})
                     self.notifications = data.get("notifications", {})
+                    self.timeouts.update(data.get("timeouts", {}))
                     llm_data = data.get("llm", {})
                     if llm_data:
                         self.llm.provider = llm_data.get("provider", self.llm.provider)
