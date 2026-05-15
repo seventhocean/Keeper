@@ -78,14 +78,12 @@ def start_chat():
     config = AppConfig.from_env()
     config.load()
 
-    # 检查 API Key（从配置文件加载）
+    # 检查 API Key — 不退出，交互式引导
     if not config.is_llm_configured():
-        click.echo(click.style("[错误] 请配置 API Key:", fg='red'))
-        click.echo("\n使用以下命令配置:")
-        click.echo("  keeper config set --api-key YOUR_API_KEY")
-        click.echo("\n或直接设置环境变量:")
-        click.echo("  export KEEPER_API_KEY='your-api-key'")
-        sys.exit(1)
+        click.echo(click.style("\n⚡ 需要配置 LLM API Key。", fg='yellow'))
+        _interactive_api_setup(config)
+        if not config.is_llm_configured():
+            click.echo(click.style("[注意] 未配置 API Key，部分智能功能不可用。", fg='yellow'))
 
     # 创建 Agent
     agent = create_agent(config)
@@ -137,26 +135,52 @@ def agent():
     start_agent_chat()
 
 
-def start_agent_chat():
-    """启动 Agent Loop 交互模式（类 Claude Code）"""
-    # 加载配置
-    config = AppConfig.from_env()
-    config.load()
+def _interactive_api_setup(config):
+    """交互式配置 API Key — 引导用户输入"""
+    click.echo(click.style("\n🔑 Keeper 需要 LLM API Key 才能使用 Agent 智能模式。", fg='yellow'))
+    click.echo("   支持 OpenAI 兼容 API 和 Anthropic API。")
+    click.echo()
+    click.echo("   快速开始（推荐）：")
+    click.echo("   1. 获取 API Key: https://platform.openai.com/api-keys")
+    click.echo("   2. 或使用国产模型（如 DeepSeek、豆包等）")
+    click.echo()
 
-    # 检查 API Key
-    if not config.is_llm_configured():
-        click.echo(click.style("[错误] Agent 模式需要 LLM 配置:", fg='red'))
-        click.echo("\n使用以下命令配置:")
-        click.echo("  keeper config set --api-key YOUR_API_KEY")
-        click.echo("\n或使用经典模式:")
-        click.echo("  keeper --classic")
-        sys.exit(1)
+    try:
+        api_key = prompt(
+            [('class:prompt', '   API Key (输入跳过): ')],
+            style=STYLE,
+        ).strip()
 
-    # 创建 Hybrid Agent
-    from .agent.hybrid import HybridAgent
-    agent = HybridAgent(config)
+        if api_key and api_key.lower() not in ('skip', '跳过'):
+            config.llm.api_key = api_key
 
-    # 流式输出回调 — 支持 dict 事件和旧 str 格式
+            base_url = prompt(
+                [('class:prompt', '   Base URL [https://api.qnaigc.com/v1]: ')],
+                style=STYLE,
+            ).strip()
+            if base_url:
+                config.llm.base_url = base_url
+
+            model = prompt(
+                [('class:prompt', '   Model [deepseek/deepseek-v3.2-251201]: ')],
+                style=STYLE,
+            ).strip()
+            if model:
+                config.llm.model = model
+
+            config.save_llm_config()
+            click.echo(click.style("\n✓ LLM 配置已保存！", fg='green'))
+            return True
+        else:
+            click.echo(click.style("\n  跳过 API Key 配置。", fg='yellow'))
+            click.echo("  后续随时用 keeper config set --api-key YOUR_KEY 配置。")
+            return False
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _create_stream_callback():
+    """创建流式输出回调"""
     def stream_callback(event):
         if isinstance(event, dict):
             etype = event.get("type", "")
@@ -176,20 +200,39 @@ def start_agent_chat():
             elif etype == "error":
                 click.echo(click.style(f"  ❌ {event.get('message', '')}", fg='red'))
             elif etype == "done":
-                pass  # 流式完成
+                pass
         else:
-            # 兼容旧 str 格式
             click.echo(click.style(str(event), fg='cyan'), nl=False)
+    return stream_callback
 
-    agent.set_stream_callback(stream_callback)
 
-    # 打印欢迎语
+def start_agent_chat():
+    """启动 Agent Loop 交互模式（类 Claude Code）"""
+    config = AppConfig.from_env()
+    config.load()
+
+    # 检查 API Key — 不退出，交互式引导配置
+    if not config.is_llm_configured():
+        click.echo(click.style("\n⚡ 首次使用？需要配置 LLM API Key。", fg='yellow'))
+        ok = _interactive_api_setup(config)
+        if not ok:
+            click.echo("\n💡 提示: 使用 keeper --classic 进入经典模式（无需 LLM）。")
+            click.echo("   或之后运行 keeper config set --api-key YOUR_KEY 配置。")
+            # 仍然启动，但会走降级模式
+            click.echo()
+
+    from .agent.hybrid import HybridAgent
+    agent = HybridAgent(config)
+    agent.set_stream_callback(_create_stream_callback())
+
     click.echo(AGENT_BANNER, color=True)
-    click.echo(click.style("🤖 Keeper Agent 模式已启动", fg='green'))
-    click.echo("   我会自动分析问题、选择工具、逐步排查。")
+    if config.is_llm_configured():
+        click.echo(click.style("🤖 Keeper Agent 模式已启动", fg='green'))
+        click.echo("   我会自动分析问题、选择工具、逐步排查。")
+    else:
+        click.echo(click.style("⚠️ Agent 模式未配置 LLM，将以降级模式运行", fg='yellow'))
     click.echo("   输入任何运维问题，或输入 '帮助' 查看能力，'退出' 结束会话\n")
 
-    # REPL 循环
     while agent.state.is_running:
         try:
             user_input = prompt(
@@ -202,7 +245,6 @@ def start_agent_chat():
             if not user_input:
                 continue
 
-            # 处理输入
             response = agent.process(user_input)
             click.echo(f"\n{response}\n")
 

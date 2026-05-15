@@ -242,14 +242,26 @@ def k8s_cluster_inspect(namespace: Optional[str] = None) -> str:
         client = K8sClient()
         success, msg = client.connect()
         if not success:
-            return f"K8s 连接失败: {msg}"
+            return (
+                f"K8s 连接失败: {msg}\n\n"
+                f"请向用户确认：\n"
+                f"  1. kubeconfig 路径（~/.kube/config 或 /etc/rancher/k3s/k3s.yaml）\n"
+                f"  2. 集群类型（K8s / K3s）\n"
+                f"  3. 是否需要指定 context\n\n"
+                f"用户提供信息后，用 execute_shell_command 设置 KUBECONFIG 环境变量后重试。"
+            )
 
         ok, report = K8sInspector.inspect_cluster(client, namespace=namespace)
         if not ok:
             return f"K8s 巡检失败: {report}"
         return format_cluster_report(report, namespace=namespace)
     except ImportError:
-        return "[错误] kubernetes SDK 未安装，请运行: pip install kubernetes"
+        return (
+            "kubernetes Python SDK 未安装。\n"
+            "你可以帮用户安装: pip install kubernetes\n"
+            "或用 execute_shell_command 执行 kubectl 命令行替代。\n"
+            "kubectl 命令不需要安装 Python SDK，功能和 SDK 一致。"
+        )
     except Exception as e:
         return f"[错误] K8s 巡检失败: {str(e)}"
 
@@ -279,7 +291,14 @@ def k8s_pod_logs(
         client = K8sClient()
         success, msg = client.connect()
         if not success:
-            return f"K8s 连接失败: {msg}"
+            return (
+                f"K8s 连接失败: {msg}\n\n"
+                f"请向用户确认：\n"
+                f"  1. kubeconfig 路径（~/.kube/config 或 /etc/rancher/k3s/k3s.yaml）\n"
+                f"  2. 集群类型（K8s / K3s）\n"
+                f"  3. 是否需要指定 context\n\n"
+                f"用户提供信息后，用 execute_shell_command 设置 KUBECONFIG 环境变量后重试。"
+            )
 
         success, output = K8sLogTools.get_pod_logs(
             client, pod_name, namespace, lines, keyword
@@ -310,7 +329,14 @@ def k8s_scale_deployment(name: str, replicas: int, namespace: str = "default") -
         client = K8sClient()
         success, msg = client.connect()
         if not success:
-            return f"K8s 连接失败: {msg}"
+            return (
+                f"K8s 连接失败: {msg}\n\n"
+                f"请向用户确认：\n"
+                f"  1. kubeconfig 路径（~/.kube/config 或 /etc/rancher/k3s/k3s.yaml）\n"
+                f"  2. 集群类型（K8s / K3s）\n"
+                f"  3. 是否需要指定 context\n\n"
+                f"用户提供信息后，用 execute_shell_command 设置 KUBECONFIG 环境变量后重试。"
+            )
 
         success, output = K8sOps.scale_deployment(client, name, namespace, replicas)
         return output
@@ -338,7 +364,14 @@ def k8s_restart_deployment(name: str, namespace: str = "default") -> str:
         client = K8sClient()
         success, msg = client.connect()
         if not success:
-            return f"K8s 连接失败: {msg}"
+            return (
+                f"K8s 连接失败: {msg}\n\n"
+                f"请向用户确认：\n"
+                f"  1. kubeconfig 路径（~/.kube/config 或 /etc/rancher/k3s/k3s.yaml）\n"
+                f"  2. 集群类型（K8s / K3s）\n"
+                f"  3. 是否需要指定 context\n\n"
+                f"用户提供信息后，用 execute_shell_command 设置 KUBECONFIG 环境变量后重试。"
+            )
 
         success, output = K8sOps.restart_deployment(client, name, namespace)
         return output
@@ -419,7 +452,14 @@ def scan_ports(host: str) -> str:
         result = ScannerTools.scan_ports(host)
         return format_scan_result(result)
     except NmapNotInstalledError as e:
-        return f"[错误] nmap 未安装: {str(e)}"
+        cmd = NmapNotInstalledError.get_install_command()
+        return (
+            f"nmap 未安装，端口扫描功能不可用。\n\n"
+            f"你可以帮用户安装 nmap：\n"
+            f"  {cmd}\n\n"
+            f"用 execute_shell_command 执行安装命令（需要 sudo 权限）。\n"
+            f"安装完成后自动重试扫描。"
+        )
     except Exception as e:
         return f"[错误] 端口扫描失败: {str(e)}"
 
@@ -498,7 +538,15 @@ def inspect_remote_server(host: str, username: str = "root") -> str:
         config = SSHConfig(host=host, username=username)
         status = SSHTools.collect_server_status(config)
         if status.ssh_failed:
-            return f"[错误] SSH 连接失败: {host} (用户: {username})"
+            return (
+                f"SSH 连接 {host} 失败（用户: {username}）。\n\n"
+                f"请向用户询问以下信息后重试：\n"
+                f"  1. SSH 用户名（默认 root，是否需要更换？）\n"
+                f"  2. SSH 密钥路径（如 ~/.ssh/id_rsa）\n"
+                f"  3. 或使用密码登录\n"
+                f"  4. SSH 端口（非标准端口 22？）\n\n"
+                f"用户提供凭据后，你可以用 execute_shell_command 通过 ssh 命令行重试。"
+            )
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
         return format_status_report(status, thresholds)
     except Exception as e:
