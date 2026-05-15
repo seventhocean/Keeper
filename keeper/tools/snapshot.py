@@ -44,7 +44,7 @@ class SnapshotManager:
     ]
 
     def __init__(self, snapshot_dir: Optional[Path] = None):
-        self.snapshot_dir = snapshot_dir or Path.home() / ".keeper" / "snapshots"
+        self.snapshot_dir = Path(snapshot_dir) if snapshot_dir else Path.home() / ".keeper" / "snapshots"
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
     def take_snapshot(self, host: str = "localhost") -> SnapshotData:

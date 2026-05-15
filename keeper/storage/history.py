@@ -30,7 +30,7 @@ class InspectionHistory:
     """巡检历史存储"""
 
     def __init__(self, db_path: Optional[Path] = None):
-        self.db_path = db_path or Path.home() / ".keeper" / "history.db"
+        self.db_path = Path(db_path) if db_path else Path.home() / ".keeper" / "history.db"
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
