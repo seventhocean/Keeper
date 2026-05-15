@@ -7,13 +7,26 @@
 4. LLM 根据结果决定是否需要更多信息
 5. 循环直到 LLM 给出最终答案
 
-这就是 Claude Code 的 Tool Use + ReAct 模式。
+兼容性：
+- 有 langgraph：使用 create_react_agent（推荐）
+- 有 langchain 无 langgraph：手动 ReAct 循环
+- 都没有：抛出明确错误提示安装
 """
 import time
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 
-from .tools_registry import ALL_TOOLS
+from .tools_registry import ALL_TOOLS, LANGCHAIN_AVAILABLE
+
+
+# ─── 检测可用的 Agent 框架 ─────────────────────────────────────
+LANGGRAPH_AVAILABLE = False
+if LANGCHAIN_AVAILABLE:
+    try:
+        from langgraph.prebuilt import create_react_agent
+        LANGGRAPH_AVAILABLE = True
+    except ImportError:
+        pass
 
 
 # ─── System Prompt ───────────────────────────────────────────────
@@ -58,6 +71,7 @@ class ToolCall:
     args: Dict[str, Any]
     result: str
     duration_ms: int
+    success: bool = True
 
 
 @dataclass
@@ -68,48 +82,68 @@ class AgentTurn:
     final_response: str = ""
     total_duration_ms: int = 0
     loop_count: int = 0
+    mode: str = ""  # "langgraph" / "manual" / "error"
 
 
 class AgentLoop:
     """Agent Loop 引擎
 
-    有两种实现方式：
-    1. LangGraph create_react_agent（推荐，自动处理循环）
-    2. 手动 ReAct 循环（更可控）
-
-    这里提供两种实现。
+    支持三种运行模式（自动降级）：
+    1. LangGraph create_react_agent（最佳体验）
+    2. 手动 ReAct 循环（兼容无 langgraph）
+    3. 错误提示（无 langchain 时）
     """
 
-    MAX_LOOPS = 10  # 最大循环次数，防止死循环
-    MAX_TOKENS_PER_TURN = 4000  # 每轮最大 token
+    MAX_LOOPS = 10          # 最大循环次数，防止死循环
+    MAX_OUTPUT_LEN = 2000   # 工具输出最大字符数（超出截断）
+    MAX_HISTORY_TURNS = 5   # 保留的历史对话轮数
 
-    def __init__(self, llm_config, mode: str = "langgraph"):
+    def __init__(self, llm_config, mode: str = "auto"):
         """初始化 Agent Loop
 
         Args:
             llm_config: LLM 配置 (api_key, base_url, model)
             mode: 执行模式
-                - "langgraph": 使用 LangGraph ReAct Agent（推荐）
-                - "manual": 手动 ReAct 循环
+                - "auto": 自动选择最佳模式
+                - "langgraph": 强制 LangGraph
+                - "manual": 强制手动 ReAct
         """
         self.llm_config = llm_config
-        self.mode = mode
+        self.requested_mode = mode
+        self.active_mode: Optional[str] = None
         self._agent = None
         self._llm = None
-        self.conversation_history: List[Dict] = []
+        self.conversation_history: List[Dict[str, str]] = []
         self.last_turn: Optional[AgentTurn] = None
+
+    def _detect_mode(self) -> str:
+        """自动检测可用模式"""
+        if self.requested_mode == "langgraph" and LANGGRAPH_AVAILABLE:
+            return "langgraph"
+        if self.requested_mode == "manual" and LANGCHAIN_AVAILABLE:
+            return "manual"
+        if self.requested_mode == "auto":
+            if LANGGRAPH_AVAILABLE:
+                return "langgraph"
+            if LANGCHAIN_AVAILABLE:
+                return "manual"
+        return "unavailable"
 
     @property
     def llm(self):
         """延迟初始化 LLM"""
         if self._llm is None:
+            if not LANGCHAIN_AVAILABLE:
+                raise RuntimeError(
+                    "langchain 未安装，无法使用 Agent Loop。\n"
+                    "请运行: pip install langchain-core langchain-openai langgraph"
+                )
             from langchain_openai import ChatOpenAI
             self._llm = ChatOpenAI(
                 api_key=self.llm_config.api_key,
                 base_url=self.llm_config.base_url,
                 model=self.llm_config.model,
                 temperature=0,
-                max_tokens=self.MAX_TOKENS_PER_TURN,
             )
         return self._llm
 
@@ -117,54 +151,37 @@ class AgentLoop:
     def agent(self):
         """延迟初始化 Agent"""
         if self._agent is None:
-            self._agent = self._create_agent()
+            self.active_mode = self._detect_mode()
+            if self.active_mode == "langgraph":
+                self._agent = self._create_langgraph_agent()
+            elif self.active_mode == "manual":
+                self._agent = self._create_manual_agent()
+            else:
+                raise RuntimeError(
+                    "无可用的 Agent 框架。\n"
+                    "请安装: pip install langchain-core langchain-openai langgraph"
+                )
         return self._agent
 
-    def _create_agent(self):
-        """创建 Agent（根据 mode 选择实现方式）"""
-        if self.mode == "langgraph":
-            return self._create_langgraph_agent()
-        else:
-            return self._create_manual_agent()
-
     def _create_langgraph_agent(self):
-        """方式 1：LangGraph ReAct Agent（推荐）
-
-        LangGraph 自动处理：
-        - Tool 调用解析
-        - 循环执行逻辑
-        - 消息历史管理
-        - 终止条件判断
-        """
-        try:
-            from langgraph.prebuilt import create_react_agent
-            agent = create_react_agent(
-                model=self.llm,
-                tools=ALL_TOOLS,
-                state_modifier=AGENT_SYSTEM_PROMPT,
-            )
-            return agent
-        except ImportError:
-            # langgraph 未安装，回退到手动模式
-            print("[提示] langgraph 未安装，使用手动 ReAct 模式")
-            self.mode = "manual"
-            return self._create_manual_agent()
+        """方式 1：LangGraph ReAct Agent"""
+        from langgraph.prebuilt import create_react_agent
+        return create_react_agent(
+            model=self.llm,
+            tools=ALL_TOOLS,
+            state_modifier=AGENT_SYSTEM_PROMPT,
+        )
 
     def _create_manual_agent(self):
-        """方式 2：手动 ReAct 循环（不依赖 langgraph）
-
-        手动实现 Tool Use 循环，兼容性更好。
-        """
-        # 绑定 tools 到 LLM
-        llm_with_tools = self.llm.bind_tools(ALL_TOOLS)
-        return llm_with_tools
+        """方式 2：手动 ReAct（LLM + bind_tools）"""
+        return self.llm.bind_tools(ALL_TOOLS)
 
     def run(self, user_input: str, stream_callback: Optional[Callable] = None) -> str:
         """执行一轮 Agent Loop
 
         Args:
             user_input: 用户输入
-            stream_callback: 流式输出回调 (可选)
+            stream_callback: 流式输出回调 (text) -> None
 
         Returns:
             Agent 最终回复
@@ -173,12 +190,22 @@ class AgentLoop:
         turn = AgentTurn(user_input=user_input)
 
         try:
-            if self.mode == "langgraph":
+            # 初始化 agent（触发模式检测）
+            _ = self.agent
+            turn.mode = self.active_mode
+
+            if self.active_mode == "langgraph":
                 response = self._run_langgraph(user_input, turn, stream_callback)
             else:
                 response = self._run_manual(user_input, turn, stream_callback)
+
+        except RuntimeError as e:
+            # 框架不可用
+            turn.mode = "error"
+            response = str(e)
         except Exception as e:
-            response = f"[Agent 错误] 执行失败: {str(e)}\n请尝试简化问题或使用 --classic 模式。"
+            turn.mode = "error"
+            response = f"[Agent 错误] 执行失败: {type(e).__name__}: {str(e)}"
 
         turn.final_response = response
         turn.total_duration_ms = int((time.time() - start_time) * 1000)
@@ -190,29 +217,34 @@ class AgentLoop:
         self, user_input: str, turn: AgentTurn, callback: Optional[Callable]
     ) -> str:
         """LangGraph 模式执行"""
-        from langchain_core.messages import HumanMessage
+        from langchain_core.messages import HumanMessage, AIMessage
 
         # 构建消息（包含历史）
         messages = []
-        for h in self.conversation_history[-10:]:  # 最近 5 轮对话
+        for h in self.conversation_history[-self.MAX_HISTORY_TURNS:]:
             messages.append(HumanMessage(content=h["user"]))
-            from langchain_core.messages import AIMessage
             messages.append(AIMessage(content=h["assistant"]))
         messages.append(HumanMessage(content=user_input))
 
-        # 执行 Agent
+        if callback:
+            callback("  🤔 Agent 分析中...\n")
+
+        # 执行
         result = self.agent.invoke({"messages": messages})
 
         # 提取工具调用记录
         for msg in result["messages"]:
             if hasattr(msg, "tool_calls") and msg.tool_calls:
                 for tc in msg.tool_calls:
-                    turn.tool_calls.append(ToolCall(
+                    tool_call = ToolCall(
                         tool_name=tc["name"],
                         args=tc["args"],
                         result="(见后续消息)",
                         duration_ms=0,
-                    ))
+                    )
+                    turn.tool_calls.append(tool_call)
+                    if callback:
+                        callback(f"  🔧 {tc['name']}({tc['args']})\n")
             turn.loop_count += 1
 
         # 提取最终回复
@@ -220,23 +252,14 @@ class AgentLoop:
         response = final_msg.content
 
         # 更新历史
-        self.conversation_history.append({
-            "user": user_input,
-            "assistant": response,
-        })
+        self._add_history(user_input, response)
 
         return response
 
     def _run_manual(
         self, user_input: str, turn: AgentTurn, callback: Optional[Callable]
     ) -> str:
-        """手动 ReAct 循环（不依赖 langgraph）
-
-        循环逻辑：
-        1. 发送消息给 LLM（带 tool 定义）
-        2. 如果 LLM 返回 tool_calls → 执行工具 → 把结果塞回消息 → 回到 1
-        3. 如果 LLM 返回纯文本 → 结束循环
-        """
+        """手动 ReAct 循环"""
         from langchain_core.messages import (
             HumanMessage, AIMessage, SystemMessage, ToolMessage,
         )
@@ -245,16 +268,23 @@ class AgentLoop:
         messages = [SystemMessage(content=AGENT_SYSTEM_PROMPT)]
 
         # 加入历史对话
-        for h in self.conversation_history[-10:]:
+        for h in self.conversation_history[-self.MAX_HISTORY_TURNS:]:
             messages.append(HumanMessage(content=h["user"]))
             messages.append(AIMessage(content=h["assistant"]))
 
         messages.append(HumanMessage(content=user_input))
 
-        # 构建工具查找表
+        # 工具查找表
         tool_map = {t.name: t for t in ALL_TOOLS}
 
+        if callback:
+            callback("  🤔 Agent 分析中...\n")
+
         # ReAct 循环
+        final_response = ""
+        consecutive_same_tool = 0
+        last_tool_name = ""
+
         for loop_i in range(self.MAX_LOOPS):
             turn.loop_count = loop_i + 1
 
@@ -268,58 +298,107 @@ class AgentLoop:
                 break
             else:
                 # 有工具调用 → 执行并把结果喂回
-                messages.append(response)  # AI 消息（含 tool_calls）
+                messages.append(response)
 
                 for tc in response.tool_calls:
                     tool_name = tc["name"]
                     tool_args = tc["args"]
                     tool_id = tc["id"]
 
-                    # 通知用户正在执行什么
-                    if callback:
-                        callback(f"  🔧 调用 {tool_name}({tool_args})...")
-
-                    # 执行工具
-                    t_start = time.time()
-                    if tool_name in tool_map:
-                        try:
-                            result = tool_map[tool_name].invoke(tool_args)
-                        except Exception as e:
-                            result = f"[工具执行错误] {str(e)}"
+                    # 检测重复调用
+                    if tool_name == last_tool_name:
+                        consecutive_same_tool += 1
                     else:
-                        result = f"[错误] 未知工具: {tool_name}"
-                    t_duration = int((time.time() - t_start) * 1000)
+                        consecutive_same_tool = 0
+                    last_tool_name = tool_name
+
+                    if consecutive_same_tool >= 3:
+                        result = f"[提示] 你已连续调用 {tool_name} 3次，请尝试其他工具或给出结论。"
+                    else:
+                        # 通知用户
+                        if callback:
+                            args_str = ", ".join(f"{k}={repr(v)}" for k, v in tool_args.items())
+                            callback(f"  🔧 调用 {tool_name}({args_str})...")
+
+                        # 执行工具
+                        t_start = time.time()
+                        if tool_name in tool_map:
+                            try:
+                                result = tool_map[tool_name].invoke(tool_args)
+                            except Exception as e:
+                                result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+                        else:
+                            result = f"[错误] 未知工具: {tool_name}"
+                        t_duration = int((time.time() - t_start) * 1000)
+
+                        # 截断过长输出
+                        if len(result) > self.MAX_OUTPUT_LEN:
+                            result = result[:self.MAX_OUTPUT_LEN] + "\n... (输出已截断)"
+
+                        if callback:
+                            callback(f" ✓ ({t_duration}ms)\n")
 
                     # 记录
                     turn.tool_calls.append(ToolCall(
                         tool_name=tool_name,
                         args=tool_args,
-                        result=result[:500],  # 截断记录
-                        duration_ms=t_duration,
+                        result=result[:500],
+                        duration_ms=t_duration if 't_duration' in dir() else 0,
+                        success=not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
                     ))
 
-                    # 把工具结果作为 ToolMessage 添加到消息中
+                    # 把工具结果作为 ToolMessage 添加
                     messages.append(ToolMessage(
                         content=result,
                         tool_call_id=tool_id,
                     ))
         else:
             # 超过最大循环次数
-            final_response = "[Agent] 达到最大执行步骤，请简化问题重试。"
+            final_response = "[Agent] 达到最大执行步骤 ({}次)，以下是目前收集到的信息摘要：\n\n".format(
+                self.MAX_LOOPS
+            )
+            for tc in turn.tool_calls[-3:]:
+                final_response += f"• {tc.tool_name}: {tc.result[:200]}\n"
+            final_response += "\n请简化问题或指定更具体的方向。"
 
         # 更新历史
-        self.conversation_history.append({
-            "user": user_input,
-            "assistant": final_response,
-        })
+        self._add_history(user_input, final_response)
 
         return final_response
 
+    def _add_history(self, user_input: str, response: str):
+        """添加到对话历史（带长度控制）"""
+        # 截断过长的回复（历史中只保留摘要）
+        summary = response[:500] if len(response) > 500 else response
+        self.conversation_history.append({
+            "user": user_input,
+            "assistant": summary,
+        })
+        # 保持历史长度
+        if len(self.conversation_history) > self.MAX_HISTORY_TURNS * 2:
+            self.conversation_history = self.conversation_history[-self.MAX_HISTORY_TURNS:]
+
     def get_last_tool_calls(self) -> List[ToolCall]:
-        """获取上一轮的工具调用记录（用于审计）"""
+        """获取上一轮的工具调用记录"""
         if self.last_turn:
             return self.last_turn.tool_calls
         return []
+
+    def get_execution_summary(self) -> str:
+        """获取上一轮执行摘要"""
+        if not self.last_turn:
+            return "(无执行记录)"
+
+        turn = self.last_turn
+        lines = [
+            f"[执行摘要] 模式: {turn.mode} | 循环: {turn.loop_count}次 | 耗时: {turn.total_duration_ms}ms",
+        ]
+        if turn.tool_calls:
+            lines.append("工具调用:")
+            for i, tc in enumerate(turn.tool_calls, 1):
+                status = "✓" if tc.success else "✗"
+                lines.append(f"  {i}. {status} {tc.tool_name} ({tc.duration_ms}ms)")
+        return "\n".join(lines)
 
     def clear_history(self):
         """清空对话历史"""

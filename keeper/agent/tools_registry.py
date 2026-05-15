@@ -4,10 +4,33 @@
 - 每个 @tool 装饰的函数就是一个 LLM 可以自主调用的能力
 - LLM 根据 docstring 理解工具用途，自动决定何时调用
 - 类似 Claude Code 的 Tool Use 机制
+
+兼容性：
+- 有 langchain_core 时：使用 @tool 装饰器（完整 Tool Use 支持）
+- 无 langchain_core 时：使用 fallback 装饰器（保持函数可调用，但无 LLM 绑定）
 """
 import subprocess
-from typing import Optional, List
-from langchain_core.tools import tool
+from typing import Optional, Callable, Any
+
+# ─── 兼容层：langchain_core 可选 ─────────────────────────────────
+try:
+    from langchain_core.tools import tool
+    LANGCHAIN_AVAILABLE = True
+except ImportError:
+    LANGCHAIN_AVAILABLE = False
+
+    # Fallback：无 langchain 时用简单装饰器保持函数签名不变
+    def tool(func: Callable) -> Callable:
+        """Fallback @tool decorator when langchain is not installed."""
+        func.name = func.__name__
+        func.description = (func.__doc__ or "").split("\n")[0]
+        func.is_tool = True
+
+        def invoke(args: dict) -> str:
+            return func(**args)
+
+        func.invoke = invoke
+        return func
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -24,7 +47,7 @@ def inspect_server(host: str = "localhost") -> str:
     Returns:
         格式化的服务器状态报告
     """
-    from ..tools.server import ServerTools, format_status_report
+    from keeper.tools.server import ServerTools, format_status_report
     try:
         status = ServerTools.inspect_server(host)
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
@@ -43,7 +66,7 @@ def get_top_processes(n: int = 10) -> str:
     Returns:
         Top N 进程列表（PID、名称、CPU%、内存%）
     """
-    from ..tools.server import ServerTools
+    from keeper.tools.server import ServerTools
     try:
         processes = ServerTools.get_top_processes(n)
         if not processes:
@@ -83,7 +106,7 @@ def query_system_logs(
     Returns:
         匹配的日志内容
     """
-    from ..tools.logs import LogTools
+    from keeper.tools.logs import LogTools
     try:
         success, output = LogTools.query_journal(
             lines=lines, unit=unit, since=since,
@@ -108,7 +131,7 @@ def read_log_file(file_path: str, lines: int = 50, keyword: Optional[str] = None
     Returns:
         日志文件内容
     """
-    from ..tools.logs import LogTools
+    from keeper.tools.logs import LogTools
     try:
         success, output = LogTools.read_file(file_path, lines=lines, keyword=keyword)
         return output if success else f"读取失败: {output}"
@@ -131,7 +154,7 @@ def ping_host(host: str, count: int = 4) -> str:
     Returns:
         Ping 测试结果（丢包率、延迟等）
     """
-    from ..tools.network import NetworkTools, format_ping_result
+    from keeper.tools.network import NetworkTools, format_ping_result
     try:
         result = NetworkTools.ping(host, count=count)
         return format_ping_result(result)
@@ -150,7 +173,7 @@ def check_port(host: str, port: int) -> str:
     Returns:
         端口状态（开放/关闭/超时）
     """
-    from ..tools.network import NetworkTools, format_port_result
+    from keeper.tools.network import NetworkTools, format_port_result
     try:
         result = NetworkTools.check_port(host, port)
         return format_port_result(result)
@@ -168,7 +191,7 @@ def dns_lookup(domain: str) -> str:
     Returns:
         DNS 解析结果（A记录、CNAME等）
     """
-    from ..tools.network import NetworkTools, format_dns_result
+    from keeper.tools.network import NetworkTools, format_dns_result
     try:
         result = NetworkTools.dns_lookup(domain)
         return format_dns_result(result)
@@ -191,9 +214,9 @@ def k8s_cluster_inspect(namespace: Optional[str] = None) -> str:
         K8s 集群巡检报告（包含异常检测和健康评分）
     """
     try:
-        from ..tools.k8s.client import K8sClient
-        from ..tools.k8s.inspector import K8sInspector
-        from ..tools.k8s.formatter import format_cluster_report
+        from keeper.tools.k8s.client import K8sClient
+        from keeper.tools.k8s.inspector import K8sInspector
+        from keeper.tools.k8s.formatter import format_cluster_report
 
         client = K8sClient()
         success, msg = client.connect()
@@ -228,8 +251,8 @@ def k8s_pod_logs(
         Pod 日志内容
     """
     try:
-        from ..tools.k8s.client import K8sClient
-        from ..tools.k8s.logs import K8sLogTools
+        from keeper.tools.k8s.client import K8sClient
+        from keeper.tools.k8s.logs import K8sLogTools
 
         client = K8sClient()
         success, msg = client.connect()
@@ -244,6 +267,63 @@ def k8s_pod_logs(
         return "[错误] kubernetes SDK 未安装"
     except Exception as e:
         return f"[错误] 获取 Pod 日志失败: {str(e)}"
+
+
+@tool
+def k8s_scale_deployment(name: str, replicas: int, namespace: str = "default") -> str:
+    """扩缩容 K8s Deployment 的副本数
+
+    Args:
+        name: Deployment 名称
+        replicas: 目标副本数
+        namespace: 命名空间，默认 "default"
+
+    Returns:
+        操作结果
+    """
+    try:
+        from keeper.tools.k8s.client import K8sClient
+        from keeper.tools.k8s.ops import K8sOps
+
+        client = K8sClient()
+        success, msg = client.connect()
+        if not success:
+            return f"K8s 连接失败: {msg}"
+
+        success, output = K8sOps.scale_deployment(client, name, namespace, replicas)
+        return output
+    except ImportError:
+        return "[错误] kubernetes SDK 未安装"
+    except Exception as e:
+        return f"[错误] 扩缩容失败: {str(e)}"
+
+
+@tool
+def k8s_restart_deployment(name: str, namespace: str = "default") -> str:
+    """滚动重启 K8s Deployment
+
+    Args:
+        name: Deployment 名称
+        namespace: 命名空间，默认 "default"
+
+    Returns:
+        操作结果
+    """
+    try:
+        from keeper.tools.k8s.client import K8sClient
+        from keeper.tools.k8s.ops import K8sOps
+
+        client = K8sClient()
+        success, msg = client.connect()
+        if not success:
+            return f"K8s 连接失败: {msg}"
+
+        success, output = K8sOps.restart_deployment(client, name, namespace)
+        return output
+    except ImportError:
+        return "[错误] kubernetes SDK 未安装"
+    except Exception as e:
+        return f"[错误] 重启失败: {str(e)}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -261,7 +341,7 @@ def docker_list_containers(all_containers: bool = True, filter_name: Optional[st
     Returns:
         容器列表（名称、状态、端口映射、运行时间）
     """
-    from ..tools.docker_tools import DockerTools, format_docker_containers
+    from keeper.tools.docker_tools import DockerTools, format_docker_containers
     try:
         if not DockerTools.is_docker_available():
             return "[错误] Docker 不可用，请检查 Docker 服务是否运行"
@@ -291,6 +371,8 @@ def docker_container_logs(container_name: str, lines: int = 50) -> str:
         return output if output.strip() else f"容器 {container_name} 无日志输出"
     except subprocess.TimeoutExpired:
         return "[超时] 获取容器日志超时"
+    except FileNotFoundError:
+        return "[错误] docker 命令未找到"
     except Exception as e:
         return f"[错误] 获取容器日志失败: {str(e)}"
 
@@ -309,7 +391,7 @@ def scan_ports(host: str) -> str:
     Returns:
         端口扫描结果 + 风险评估
     """
-    from ..tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
+    from keeper.tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
     try:
         result = ScannerTools.scan(host)
         return format_scan_result(result)
@@ -329,13 +411,75 @@ def check_ssl_cert(target: str) -> str:
     Returns:
         证书信息（过期时间、剩余天数、状态）
     """
-    from ..tools.cert_monitor import CertMonitor, format_cert_report
+    from keeper.tools.cert_monitor import CertMonitor, format_cert_report
     try:
         monitor = CertMonitor()
         certs = monitor.check_domain(target)
         return format_cert_report(certs)
     except Exception as e:
         return f"[错误] 证书检查失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# 服务管理工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def manage_systemd_service(service: str, action: str = "status") -> str:
+    """管理 systemd 服务（查看状态/重启/停止/启动）
+
+    Args:
+        service: 服务名称 (如 nginx, mysql, docker, sshd)
+        action: 操作类型，可选 status/restart/stop/start/enable/disable
+
+    Returns:
+        服务状态或操作结果
+    """
+    allowed_actions = {"status", "restart", "stop", "start", "enable", "disable"}
+    if action not in allowed_actions:
+        return f"[错误] 不支持的操作: {action}，可选: {', '.join(allowed_actions)}"
+
+    try:
+        result = subprocess.run(
+            ["systemctl", action, service],
+            capture_output=True, text=True, timeout=30,
+        )
+        output = result.stdout + result.stderr
+        return output.strip() if output.strip() else f"systemctl {action} {service} 执行完成"
+    except subprocess.TimeoutExpired:
+        return f"[超时] systemctl {action} {service} 超时"
+    except FileNotFoundError:
+        return "[错误] systemctl 命令不可用（非 systemd 系统）"
+    except Exception as e:
+        return f"[错误] 服务操作失败: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
+# SSH 远程巡检
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def inspect_remote_server(host: str, username: str = "root") -> str:
+    """通过 SSH 检查远程服务器的资源状态（CPU/内存/磁盘/负载）
+
+    Args:
+        host: 远程服务器 IP 地址
+        username: SSH 用户名，默认 root
+
+    Returns:
+        远程服务器状态报告
+    """
+    from keeper.tools.ssh import SSHTools, SSHConfig
+    from keeper.tools.server import format_status_report
+    try:
+        config = SSHConfig(host=host, username=username)
+        status = SSHTools.collect_server_status(config)
+        if status.ssh_failed:
+            return f"[错误] SSH 连接失败: {host} (用户: {username})"
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+        return format_status_report(status, thresholds)
+    except Exception as e:
+        return f"[错误] 远程巡检失败 ({host}): {str(e)}"
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -354,7 +498,7 @@ def execute_shell_command(command: str) -> str:
     Returns:
         命令执行输出
     """
-    from ..tools.fixer import FixSuggester, SafetyLevel
+    from keeper.tools.fixer import FixSuggester, SafetyLevel
 
     # 安全等级检查
     safety = FixSuggester.classify_command_safety(command)
@@ -402,12 +546,18 @@ ALL_TOOLS = [
     # K8s
     k8s_cluster_inspect,
     k8s_pod_logs,
+    k8s_scale_deployment,
+    k8s_restart_deployment,
     # Docker
     docker_list_containers,
     docker_container_logs,
     # 安全
     scan_ports,
     check_ssl_cert,
+    # 服务管理
+    manage_systemd_service,
+    # SSH 远程
+    inspect_remote_server,
     # 通用
     execute_shell_command,
 ]
@@ -415,7 +565,11 @@ ALL_TOOLS = [
 
 def get_tools_description() -> str:
     """获取所有工具的描述（用于展示能力列表）"""
-    lines = ["Keeper 可用工具列表：", "=" * 40]
+    lines = ["\n🔧 可用工具列表：", "=" * 40]
     for t in ALL_TOOLS:
-        lines.append(f"  • {t.name}: {t.description.split(chr(10))[0]}")
+        name = t.name if hasattr(t, 'name') else t.__name__
+        doc = (t.description if hasattr(t, 'description') else t.__doc__) or ""
+        first_line = doc.split("\n")[0]
+        lines.append(f"  • {name}: {first_line}")
+    lines.append(f"\n共 {len(ALL_TOOLS)} 个工具可用")
     return "\n".join(lines)
