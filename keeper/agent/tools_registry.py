@@ -54,6 +54,31 @@ def inspect_server(host: str = "localhost") -> str:
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
         report = format_status_report(status, thresholds)
 
+        # 自动写入巡检历史（SQLite）
+        if not status.ssh_failed:
+            try:
+                from keeper.storage.history import InspectionHistory
+                history = InspectionHistory()
+                history.save(
+                    host=status.host,
+                    cpu=status.cpu_percent,
+                    memory=status.memory_percent,
+                    disk=status.disk_percent,
+                    load=status.load_avg_1m,
+                    raw_data={
+                        "memory_used_gb": status.memory_used_gb,
+                        "memory_total_gb": status.memory_total_gb,
+                        "disk_used_gb": status.disk_used_gb,
+                        "disk_total_gb": status.disk_total_gb,
+                        "load_avg_5m": status.load_avg_5m,
+                        "load_avg_15m": status.load_avg_15m,
+                        "boot_time": status.boot_time,
+                        "top_processes": status.top_processes[:5],
+                    },
+                )
+            except Exception:
+                pass  # 历史写入失败不影响巡检结果
+
         # 自动触发告警检查
         try:
             data = {

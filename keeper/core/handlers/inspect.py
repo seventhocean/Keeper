@@ -3,6 +3,34 @@ from typing import Dict, Any, List, Optional
 
 from ...tools.server import ServerTools, format_status_report, format_batch_report
 from ...tools.ssh import SSHTools
+from ...storage.history import InspectionHistory
+
+
+def _save_to_history(status) -> None:
+    """将巡检结果写入 SQLite 历史（静默失败）"""
+    if status.ssh_failed:
+        return
+    try:
+        history = InspectionHistory()
+        history.save(
+            host=status.host,
+            cpu=status.cpu_percent,
+            memory=status.memory_percent,
+            disk=status.disk_percent,
+            load=status.load_avg_1m,
+            raw_data={
+                "memory_used_gb": status.memory_used_gb,
+                "memory_total_gb": status.memory_total_gb,
+                "disk_used_gb": status.disk_used_gb,
+                "disk_total_gb": status.disk_total_gb,
+                "load_avg_5m": status.load_avg_5m,
+                "load_avg_15m": status.load_avg_15m,
+                "boot_time": status.boot_time,
+                "top_processes": status.top_processes[:5],
+            },
+        )
+    except Exception:
+        pass
 
 
 def handle_inspect(entities: Dict[str, Any], *, config, state, agent_ref) -> str:
@@ -33,6 +61,9 @@ def handle_inspect(entities: Dict[str, Any], *, config, state, agent_ref) -> str
             agent_ref._last_inspect_statuses = statuses
             report = format_batch_report(statuses, thresholds)
             state.context.current_host = "batch"
+            # 写入巡检历史
+            for s in statuses:
+                _save_to_history(s)
             return report
         except Exception as e:
             return f"[巡检] 批量巡检失败：{str(e)}"
@@ -45,6 +76,8 @@ def handle_inspect(entities: Dict[str, Any], *, config, state, agent_ref) -> str
         agent_ref._last_inspect_statuses = [status]
         report = format_status_report(status, thresholds)
         state.context.current_host = target_host
+        # 写入巡检历史
+        _save_to_history(status)
         return report
     except NotImplementedError as e:
         return f"[巡检] {str(e)}"
