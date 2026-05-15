@@ -133,7 +133,7 @@ def read_log_file(file_path: str, lines: int = 50, keyword: Optional[str] = None
     """
     from keeper.tools.logs import LogTools
     try:
-        success, output = LogTools.read_file(file_path, lines=lines, keyword=keyword)
+        success, output = LogTools.query_file(path=file_path, lines=lines, keyword=keyword)
         return output if success else f"读取失败: {output}"
     except Exception as e:
         return f"[错误] 读取日志文件失败: {str(e)}"
@@ -223,8 +223,9 @@ def k8s_cluster_inspect(namespace: Optional[str] = None) -> str:
         if not success:
             return f"K8s 连接失败: {msg}"
 
-        inspector = K8sInspector(client)
-        report = inspector.full_inspect(namespace=namespace)
+        ok, report = K8sInspector.inspect_cluster(client, namespace=namespace)
+        if not ok:
+            return f"K8s 巡检失败: {report}"
         return format_cluster_report(report, namespace=namespace)
     except ImportError:
         return "[错误] kubernetes SDK 未安装，请运行: pip install kubernetes"
@@ -346,7 +347,8 @@ def docker_list_containers(all_containers: bool = True, filter_name: Optional[st
         if not DockerTools.is_docker_available():
             return "[错误] Docker 不可用，请检查 Docker 服务是否运行"
         containers = DockerTools.list_containers(all_containers, filter_name)
-        return format_docker_containers(containers)
+        stats = DockerTools.get_container_stats()
+        return format_docker_containers(containers, stats)
     except Exception as e:
         return f"[错误] Docker 查询失败: {str(e)}"
 
@@ -393,7 +395,7 @@ def scan_ports(host: str) -> str:
     """
     from keeper.tools.scanner import ScannerTools, format_scan_result, NmapNotInstalledError
     try:
-        result = ScannerTools.scan(host)
+        result = ScannerTools.scan_ports(host)
         return format_scan_result(result)
     except NmapNotInstalledError as e:
         return f"[错误] nmap 未安装: {str(e)}"
@@ -414,7 +416,7 @@ def check_ssl_cert(target: str) -> str:
     from keeper.tools.cert_monitor import CertMonitor, format_cert_report
     try:
         monitor = CertMonitor()
-        certs = monitor.check_domain(target)
+        certs = monitor.check_domain_cert(target)
         return format_cert_report(certs)
     except Exception as e:
         return f"[错误] 证书检查失败: {str(e)}"

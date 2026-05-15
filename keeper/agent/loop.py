@@ -193,7 +193,7 @@ class AgentLoop:
         return create_react_agent(
             model=self.llm,
             tools=self._get_tools(),
-            state_modifier=AGENT_SYSTEM_PROMPT,
+            prompt=AGENT_SYSTEM_PROMPT,
         )
 
     def _create_manual_agent(self):
@@ -271,9 +271,22 @@ class AgentLoop:
                         callback(f"  🔧 {tc['name']}({tc['args']})\n")
             turn.loop_count += 1
 
-        # 提取最终回复
-        final_msg = result["messages"][-1]
-        response = final_msg.content
+        # 提取最终回复 — 从后往前找第一条有文本内容的消息
+        response = ""
+        for msg in reversed(result["messages"]):
+            content = getattr(msg, "content", None)
+            if content and isinstance(content, str) and content.strip():
+                # 跳过只有 tool_calls 没有实质内容的消息
+                has_tool_calls = getattr(msg, "tool_calls", None)
+                if not has_tool_calls or len(content.strip()) > 20:
+                    response = content
+                    break
+
+        if not response:
+            # 无可用的文本回复，基于工具调用生成摘要
+            response = "[Agent] 已完成数据收集，但未生成最终回复。以下为执行摘要：\n"
+            for tc in turn.tool_calls[-5:]:
+                response += f"  • {tc.tool_name}: {tc.result[:150]}\n"
 
         # 更新历史
         self._add_history(user_input, response)
@@ -343,6 +356,13 @@ class AgentLoop:
                         if callback:
                             args_str = ", ".join(f"{k}={repr(v)}" for k, v in tool_args.items())
                             callback(f"  🔧 调用 {tool_name}({args_str})...")
+
+                        # 安全检查
+                        from .safety import is_tool_auto_allowed, get_tool_permission
+                        if not is_tool_auto_allowed(tool_name):
+                            level = get_tool_permission(tool_name)
+                            if callback:
+                                callback(f" ⚠️ 需确认 [{level.value}]\n")
 
                         # 执行工具
                         t_start = time.time()

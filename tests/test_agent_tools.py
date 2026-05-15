@@ -78,35 +78,35 @@ class TestToolSafety:
 
     def test_dangerous_command_blocked(self):
         """危险命令应被拦截"""
-        result = execute_shell_command("rm -rf /")
+        result = execute_shell_command.invoke({"command": "rm -rf /"})
         assert "安全拦截" in result or "高危" in result
 
     def test_dangerous_dd_blocked(self):
         """dd 命令应被拦截"""
-        result = execute_shell_command("dd if=/dev/zero of=/dev/sda")
+        result = execute_shell_command.invoke({"command": "dd if=/dev/zero of=/dev/sda"})
         assert "安全拦截" in result or "高危" in result
 
     def test_dangerous_mkfs_blocked(self):
         """mkfs 命令应被拦截"""
-        result = execute_shell_command("mkfs.ext4 /dev/sda1")
+        result = execute_shell_command.invoke({"command": "mkfs.ext4 /dev/sda1"})
         assert "安全拦截" in result or "高危" in result
 
     def test_safe_command_allowed(self):
         """安全命令应能执行"""
-        result = execute_shell_command("echo hello")
+        result = execute_shell_command.invoke({"command": "echo hello"})
         # 应该不包含安全拦截
         assert "安全拦截" not in result
 
     def test_safe_df_command(self):
         """df 命令应能执行"""
-        result = execute_shell_command("df -h /")
+        result = execute_shell_command.invoke({"command": "df -h /"})
         assert "安全拦截" not in result
         # df 应该有输出（Filesystem 或 文件系统）
         assert len(result) > 10
 
     def test_systemd_service_invalid_action(self):
         """无效的 service action 应报错"""
-        result = manage_systemd_service("nginx", "destroy")
+        result = manage_systemd_service.invoke({"service": "nginx", "action": "destroy"})
         assert "不支持的操作" in result
 
 
@@ -115,19 +115,19 @@ class TestToolExecution:
 
     def test_execute_shell_echo(self):
         """execute_shell_command 应能执行 echo"""
-        result = execute_shell_command("echo test_output_12345")
+        result = execute_shell_command.invoke({"command": "echo test_output_12345"})
         assert "test_output_12345" in result
 
     def test_execute_shell_timeout_info(self):
         """超长命令应被截断提示"""
         # 生成一个会产生大量输出的命令
-        result = execute_shell_command("seq 1 10000")
+        result = execute_shell_command.invoke({"command": "seq 1 10000"})
         # 结果应该被截断或正常返回
         assert len(result) <= 3200  # MAX 3000 + 一些截断提示
 
     def test_execute_empty_command(self):
         """空输出命令应有提示"""
-        result = execute_shell_command("true")
+        result = execute_shell_command.invoke({"command": "true"})
         assert "无输出" in result or result.strip() == ""
 
 

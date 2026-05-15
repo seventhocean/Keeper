@@ -20,6 +20,26 @@ from keeper.core.context import AgentState
 from keeper.nlu.langchain_engine import _try_fast_match
 from keeper.nlu.base import IntentType
 from .loop import AgentLoop, LANGCHAIN_AVAILABLE
+from .planner import match_plan_template, should_show_plan
+from .memory import AgentMemory
+
+
+def _classify_input(user_input: str) -> str:
+    """根据输入关键词分类任务类型"""
+    input_lower = user_input.lower()
+    if any(kw in input_lower for kw in ("k8s", "kubernetes", "pod", "集群", "deployment")):
+        return "k8s"
+    if any(kw in input_lower for kw in ("网络", "ping", "端口", "dns", "延迟")):
+        return "network"
+    if any(kw in input_lower for kw in ("cpu", "内存", "磁盘", "检查", "服务器", "负载")):
+        return "inspect"
+    if any(kw in input_lower for kw in ("安全", "扫描", "漏洞", "证书", "ssl", "tls")):
+        return "security"
+    if any(kw in input_lower for kw in ("docker", "容器", "镜像")):
+        return "docker"
+    if any(kw in input_lower for kw in ("修复", "清理", "重启", "扩容", "缩容")):
+        return "fix"
+    return "general"
 
 
 class HybridAgent:
@@ -41,6 +61,7 @@ class HybridAgent:
         self.audit = AuditLogger()
         self._agent_loop: Optional[AgentLoop] = None
         self._stream_callback: Optional[Callable] = None
+        self.memory = AgentMemory()
 
     @property
     def agent_loop(self) -> AgentLoop:
@@ -86,16 +107,37 @@ class HybridAgent:
             return self._handle_no_llm(user_input, fast_result)
 
         try:
-            response = self.agent_loop.run(user_input, stream_callback=self._stream_callback)
+            # 注入排查计划（如果匹配到模板）
+            plan = match_plan_template(user_input)
+            augmented_input = user_input
+            if plan and should_show_plan(user_input):
+                steps_desc = " → ".join(s.description for s in plan.steps)
+                augmented_input = f"{user_input}\n\n[排查路线: {steps_desc}]"
+
+            # 注入历史记忆上下文
+            history_context = self.memory.get_context_for_prompt(user_input)
+            if history_context:
+                augmented_input = f"{history_context}\n[当前问题]\n{augmented_input}"
+
+            response = self.agent_loop.run(augmented_input, stream_callback=self._stream_callback)
 
             # 记录审计
             tool_calls = self.agent_loop.get_last_tool_calls()
+            audit_tool_names = [tc.tool_name for tc in tool_calls]
             self._log_audit(
                 "agent_loop",
                 "multi_step",
-                {"tools": [tc.tool_name for tc in tool_calls], "loops": self.agent_loop.last_turn.loop_count if self.agent_loop.last_turn else 0},
+                {"tools": audit_tool_names, "loops": self.agent_loop.last_turn.loop_count if self.agent_loop.last_turn else 0},
                 response,
                 start_time,
+            )
+
+            # 保存到长期记忆
+            self.memory.add(
+                user_input=user_input,
+                tools_used=audit_tool_names,
+                conclusion=response[:300],
+                category=_classify_input(user_input),
             )
             return response
 
@@ -125,7 +167,10 @@ class HybridAgent:
             mode = self._agent_loop.active_mode if self._agent_loop else "未初始化"
             return f"[系统] 当前模式: Agent Loop ({mode})"
 
-        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode"
+        if cmd in ("/memory", "/记忆"):
+            return self.memory.format_recent(5)
+
+        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory"
 
     def _handle_fast_path(self, intent: IntentType, entities: dict) -> str:
         """处理 Fast Path 意图"""

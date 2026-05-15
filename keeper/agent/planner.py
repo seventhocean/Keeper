@@ -115,7 +115,7 @@ PLAN_TEMPLATES = {
         steps=[
             PlanStep(1, "检查磁盘使用率", "inspect_server"),
             PlanStep(2, "查找大文件", "execute_shell_command", "command=du -sh /* 2>/dev/null | sort -rh | head -10"),
-            PlanStep(3, "检查日志目录大小", "execute_shell_command", "command=du -sh /var/log/* | sort -rh | head-10"),
+            PlanStep(3, "检查日志目录大小", "execute_shell_command", "command=du -sh /var/log/* | sort -rh | head -10"),
         ],
     ),
     "network_issue": ExecutionPlan(
