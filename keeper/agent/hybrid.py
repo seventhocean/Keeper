@@ -64,6 +64,7 @@ class HybridAgent:
         self._agent_loop: Optional[AgentLoop] = None
         self._stream_callback: Optional[Callable] = None
         self.memory = AgentMemory()
+        self._first_turn = True  # 首次对话标志，用于注入记忆摘要
 
     @property
     def agent_loop(self) -> AgentLoop:
@@ -117,9 +118,23 @@ class HybridAgent:
                 augmented_input = f"{user_input}\n\n[排查路线: {steps_desc}]"
 
             # 注入历史记忆上下文
-            history_context = self.memory.get_context_for_prompt(user_input)
-            if history_context:
-                augmented_input = f"{history_context}\n[当前问题]\n{augmented_input}"
+            # 首次对话：主动注入最近记忆摘要（无论是否匹配关键词）
+            # 后续对话：仅在关键词匹配时注入相关记忆
+            if self._first_turn:
+                self._first_turn = False
+                recent = self.memory.get_recent(3)
+                if recent:
+                    lines = ["[上次工作回顾]"]
+                    for entry in recent:
+                        time_str = entry.timestamp[:16].replace("T", " ")
+                        lines.append(f"  • [{time_str}] {entry.user_input}")
+                        lines.append(f"    结论: {entry.conclusion[:100]}")
+                    lines.append("")
+                    augmented_input = "\n".join(lines) + f"[当前问题]\n{augmented_input}"
+            else:
+                history_context = self.memory.get_context_for_prompt(user_input)
+                if history_context:
+                    augmented_input = f"{history_context}\n[当前问题]\n{augmented_input}"
 
             response = self.agent_loop.run(augmented_input, stream_callback=self._stream_callback)
 
