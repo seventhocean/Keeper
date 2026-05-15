@@ -42,7 +42,7 @@ else
     KEEPER_BIN_DIR="${KEEPER_BIN_INSTALL_DIR:-$HOME/.local/bin}"
 fi
 KEEPER_DIR="$KEEPER_BASE/app"
-REPO_URL="git@github.com:seventhocean/Keeper.git"
+REPO_URL="https://github.com/seventhocean/Keeper.git"
 KEEPER_BRANCH="main"
 
 # ─── Ensure PATH ─────────────────────────────────────────────────────────────

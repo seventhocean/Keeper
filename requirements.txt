@@ -3,7 +3,9 @@ langchain>=0.3.0
 langchain-core>=0.3.0
 langchain-openai>=0.2.0
 langchain-anthropic>=0.2.0
+langgraph>=0.2.0
 pydantic>=2.0
+schedule>=1.2
 
 # CLI
 click>=8.0
@@ -18,8 +20,9 @@ psutil>=5.9
 # HTTP client
 httpx>=0.25.0
 
-# K8s SDK
+# Optional: K8s
 kubernetes>=28.0
 
-# Task scheduling
-schedule>=1.2
+# Optional: API server
+fastapi>=0.100.0
+uvicorn>=0.20.0

@@ -1,0 +1,25 @@
+name: log_rotate
+description: 日志轮转流程
+variables:
+  log_path: /var/log
+tags: [log, maintenance]
+
+steps:
+  - name: 查看日志目录大小
+    action: shell
+    command: "du -sh {{log_path}} 2>/dev/null"
+    safety: safe
+    timeout: 15
+
+  - name: 执行 logrotate
+    action: shell
+    command: "logrotate -f /etc/logrotate.conf"
+    safety: caution
+    confirm: true
+    timeout: 60
+
+  - name: 验证日志目录大小
+    action: shell
+    command: "du -sh {{log_path}} 2>/dev/null"
+    safety: safe
+    timeout: 15

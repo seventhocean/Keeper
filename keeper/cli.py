@@ -22,7 +22,14 @@ STYLE = Style.from_dict({
 
 BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.4.0-dev - 智能运维平台        │
+│  Keeper v1.0.0 - 智能运维平台            │
+└─────────────────────────────────────────┘
+"""
+
+AGENT_BANNER = """
+┌─────────────────────────────────────────┐
+│  Keeper v1.0.0 - Agent 模式              │
+│  LLM 自主决策 + 多步工具调用             │
 └─────────────────────────────────────────┘
 """
 
@@ -50,13 +57,19 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.4.0-dev')
+@click.version_option(version='1.0.0')
+@click.option('--classic', is_flag=True, help='使用经典路由器模式（不使用 Agent Loop）')
 @click.pass_context
-def cli(ctx):
+def cli(ctx, classic):
     """Keeper - 智能运维助手"""
+    ctx.ensure_object(dict)
+    ctx.obj['classic'] = classic
     if ctx.invoked_subcommand is None:
         # 没有子命令时，启动交互模式
-        start_chat()
+        if classic:
+            start_chat()
+        else:
+            start_agent_chat()
 
 
 def start_chat():
@@ -65,14 +78,12 @@ def start_chat():
     config = AppConfig.from_env()
     config.load()
 
-    # 检查 API Key（从配置文件加载）
+    # 检查 API Key — 不退出，交互式引导
     if not config.is_llm_configured():
-        click.echo(click.style("[错误] 请配置 API Key:", fg='red'))
-        click.echo("\n使用以下命令配置:")
-        click.echo("  keeper config set --api-key YOUR_API_KEY")
-        click.echo("\n或直接设置环境变量:")
-        click.echo("  export KEEPER_API_KEY='your-api-key'")
-        sys.exit(1)
+        click.echo(click.style("\n⚡ 需要配置 LLM API Key。", fg='yellow'))
+        _interactive_api_setup(config)
+        if not config.is_llm_configured():
+            click.echo(click.style("[注意] 未配置 API Key，部分智能功能不可用。", fg='yellow'))
 
     # 创建 Agent
     agent = create_agent(config)
@@ -114,8 +125,136 @@ def start_chat():
 
 @cli.command()
 def chat():
-    """启动交互式对话模式"""
+    """启动交互式对话模式（经典路由器模式）"""
     start_chat()
+
+
+@cli.command()
+def agent():
+    """启动 Agent 模式（LLM 自主决策 + 多步工具调用）"""
+    start_agent_chat()
+
+
+def _interactive_api_setup(config):
+    """交互式配置 API Key — 引导用户输入"""
+    click.echo(click.style("\n🔑 Keeper 需要 LLM API Key 才能使用 Agent 智能模式。", fg='yellow'))
+    click.echo("   支持 OpenAI 兼容 API 和 Anthropic API。")
+    click.echo()
+    click.echo("   快速开始（推荐）：")
+    click.echo("   1. 获取 API Key: https://platform.openai.com/api-keys")
+    click.echo("   2. 或使用国产模型（如 DeepSeek、豆包等）")
+    click.echo()
+
+    try:
+        api_key = prompt(
+            [('class:prompt', '   API Key (输入跳过): ')],
+            style=STYLE,
+        ).strip()
+
+        if api_key and api_key.lower() not in ('skip', '跳过'):
+            config.llm.api_key = api_key
+
+            base_url = prompt(
+                [('class:prompt', '   Base URL [https://api.qnaigc.com/v1]: ')],
+                style=STYLE,
+            ).strip()
+            if base_url:
+                config.llm.base_url = base_url
+
+            model = prompt(
+                [('class:prompt', '   Model [deepseek/deepseek-v3.2-251201]: ')],
+                style=STYLE,
+            ).strip()
+            if model:
+                config.llm.model = model
+
+            config.save_llm_config()
+            click.echo(click.style("\n✓ LLM 配置已保存！", fg='green'))
+            return True
+        else:
+            click.echo(click.style("\n  跳过 API Key 配置。", fg='yellow'))
+            click.echo("  后续随时用 keeper config set --api-key YOUR_KEY 配置。")
+            return False
+    except (EOFError, KeyboardInterrupt):
+        return False
+
+
+def _create_stream_callback():
+    """创建流式输出回调"""
+    def stream_callback(event):
+        if isinstance(event, dict):
+            etype = event.get("type", "")
+            if etype == "thinking":
+                click.echo(click.style(f"  🤔 {event.get('message', '')}", fg='bright_black'), nl=False)
+            elif etype == "tool_call":
+                args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
+                click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+            elif etype == "tool_result":
+                icon = "✓" if event.get("success") else "✗"
+                color = 'green' if event.get("success") else 'red'
+                click.echo(click.style(f" {icon} ({event.get('duration_ms', 0)}ms)", fg=color))
+            elif etype == "text":
+                click.echo(click.style(event.get("content", ""), fg='white'), nl=False)
+            elif etype == "warning":
+                click.echo(click.style(f"  {event.get('message', '')}", fg='yellow'))
+            elif etype == "error":
+                click.echo(click.style(f"  ❌ {event.get('message', '')}", fg='red'))
+            elif etype == "done":
+                pass
+        else:
+            click.echo(click.style(str(event), fg='cyan'), nl=False)
+    return stream_callback
+
+
+def start_agent_chat():
+    """启动 Agent Loop 交互模式（类 Claude Code）"""
+    config = AppConfig.from_env()
+    config.load()
+
+    # 检查 API Key — 不退出，交互式引导配置
+    if not config.is_llm_configured():
+        click.echo(click.style("\n⚡ 首次使用？需要配置 LLM API Key。", fg='yellow'))
+        ok = _interactive_api_setup(config)
+        if not ok:
+            click.echo("\n💡 提示: 使用 keeper --classic 进入经典模式（无需 LLM）。")
+            click.echo("   或之后运行 keeper config set --api-key YOUR_KEY 配置。")
+            # 仍然启动，但会走降级模式
+            click.echo()
+
+    from .agent.hybrid import HybridAgent
+    agent = HybridAgent(config)
+    agent.set_stream_callback(_create_stream_callback())
+
+    click.echo(AGENT_BANNER, color=True)
+    if config.is_llm_configured():
+        click.echo(click.style("🤖 Keeper Agent 模式已启动", fg='green'))
+        click.echo("   我会自动分析问题、选择工具、逐步排查。")
+    else:
+        click.echo(click.style("⚠️ Agent 模式未配置 LLM，将以降级模式运行", fg='yellow'))
+    click.echo("   输入任何运维问题，或输入 '帮助' 查看能力，'退出' 结束会话\n")
+
+    while agent.state.is_running:
+        try:
+            user_input = prompt(
+                [('class:prompt', 'keeper🤖> ')],
+                style=STYLE,
+                history=FileHistory(os.path.expanduser('~/.keeper/agent_history.txt')),
+                auto_suggest=AutoSuggestFromHistory(),
+            ).strip()
+
+            if not user_input:
+                continue
+
+            response = agent.process(user_input)
+            click.echo(f"\n{response}\n")
+
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            click.echo(click.style("\n👋 再见！", fg='green'))
+            break
+        except Exception as e:
+            click.echo(click.style(f"[错误] {e}\n", fg='red'))
 
 
 @cli.command(context_settings={'ignore_unknown_options': True})
@@ -123,7 +262,8 @@ def chat():
 @click.option('--host', '-h', help='目标主机 IP 或主机名')
 @click.option('--profile', '-p', help='使用的环境配置')
 @click.option('--full', is_flag=True, help='执行完整扫描')
-def run(command, host, profile, full):
+@click.option('--classic', is_flag=True, help='使用经典路由器模式')
+def run(command, host, profile, full, classic):
     """执行单条命令
 
     示例:
@@ -141,15 +281,33 @@ def run(command, host, profile, full):
         click.echo("  使用：keeper config set --api-key YOUR_API_KEY")
         sys.exit(1)
 
-    # 创建 Agent
-    agent = create_agent(config)
-
     # 构建用户输入
     user_input = ' '.join(command)
-
-    # 添加命令行参数到上下文
     if host:
         user_input = f"{user_input} {host}"
+
+    if classic:
+        # 经典路由器模式
+        agent = create_agent(config)
+    else:
+        # Agent Loop 模式
+        from .agent.hybrid import HybridAgent
+        agent = HybridAgent(config)
+
+        def run_callback(event):
+            """单命令模式流式回调 — 简化输出"""
+            if isinstance(event, dict):
+                if event.get("type") == "tool_call":
+                    args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
+                    click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+                elif event.get("type") == "tool_result":
+                    icon = "✓" if event.get("success") else "✗"
+                    click.echo(click.style(f" {icon}", fg='green' if event.get("success") else 'red'))
+                elif event.get("type") == "warning":
+                    click.echo(click.style(f"  ⚠️ {event.get('message', '')}", fg='yellow'))
+                elif event.get("type") == "thinking":
+                    click.echo(click.style("  🤔 ...", fg='bright_black'), nl=False)
+        agent.set_stream_callback(run_callback)
 
     # 处理输入
     try:
@@ -536,23 +694,32 @@ def k8s():
     pass
 
 
+def _get_k8s_modules():
+    """安全导入 K8s 模块，未安装 SDK 时给出友好提示"""
+    try:
+        from .tools.k8s.client import K8sClient, K8sClusterConfig
+        from .tools.k8s.inspector import K8sInspector
+        from .tools.k8s.formatter import format_cluster_report
+        from .tools.k8s.logs import K8sLogTools
+        from .tools.k8s.ops import K8sOps
+        return K8sClient, K8sClusterConfig, K8sInspector, format_cluster_report, K8sLogTools, K8sOps
+    except ImportError:
+        click.echo(click.style(
+            "[K8s] kubernetes SDK 未安装。\n"
+            "  安装方法: pip install kubernetes\n"
+            "  或在 Agent 模式中直接对话，LLM 会通过 kubectl 命令行操作。", fg='yellow'))
+        sys.exit(1)
+
+
 @k8s.command("inspect")
 @click.option('--namespace', '-n', type=str, help='限定命名空间')
 @click.option('--kubeconfig', '-k', type=str, help='kubeconfig 文件路径')
 @click.option('--context', '-c', type=str, help='集群上下文名称')
 def k8s_inspect(namespace, kubeconfig, context):
-    """K8s 集群巡检
-
-    示例:
-        keeper k8s inspect
-        keeper k8s inspect -n kube-system
-    """
+    """K8s 集群巡检"""
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.inspector import K8sInspector
-    from .tools.k8s.formatter import format_cluster_report
+    K8sClient, K8sClusterConfig, K8sInspector, format_cluster_report, _, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -596,9 +763,7 @@ def k8s_logs(pod_name, namespace, lines, keyword, container, kubeconfig):
     """
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.logs import K8sLogTools
+    K8sClient, K8sClusterConfig, _, _, K8sLogTools, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -633,17 +798,10 @@ def k8s_logs(pod_name, namespace, lines, keyword, container, kubeconfig):
 @click.option('--namespace', '-n', type=str, help='限定命名空间')
 @click.option('--kubeconfig', type=str, help='kubeconfig 文件路径')
 def k8s_events(namespace, kubeconfig):
-    """查看集群 Warning 事件
-
-    示例:
-        keeper k8s events
-        keeper k8s events -n kube-system
-    """
+    """查看集群 Warning 事件"""
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.inspector import K8sInspector
+    K8sClient, K8sClusterConfig, K8sInspector, _, _, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -698,8 +856,7 @@ def k8s_exec(pod_name, command, namespace, container, kubeconfig):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -744,8 +901,7 @@ def k8s_scale(deployment, replicas, namespace):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -785,8 +941,7 @@ def k8s_restart(deployment, namespace):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(

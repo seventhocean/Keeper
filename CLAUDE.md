@@ -6,17 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keeper** - 智能运维 Agent，类似 Claude Code 的对话式 CLI 工具
 
-**版本：** v0.5.0-dev (2026-04-12)
-
-## 开发进度
-
-| 阶段 | 版本 | 状态 | 内容 |
-|------|------|------|------|
-| Phase 1 - MVP | v0.1.0 | ✅ 完成 | CLI 框架、NLU 引擎、服务器巡检、配置管理、对话记忆 |
-| Phase 2 - 增强 | v0.2.0 | ✅ 完成 | 报告导出、审计日志、系统日志查询、多主机巡检、SSH 采集 |
-| Phase 3 - K8s | v0.3.0 | ✅ 完成 | K8s 集群管理、资源巡检、异常检测、ConfigMap/Secret/Ingress/LimitRange |
-| Phase 4 - 智能分析 | v0.4.0 | ✅ 完成 | Docker 管理、根因分析、网络诊断、K8s 深度操作、定时任务、自动修复、证书监控、飞书通知 |
-| Phase 5 - 安全集成 | v0.5.0 | 🚧 开发中 | 安全基线、审计报表、Prometheus 集成、IM 通知扩展 |
+**版本：** v1.0.0 (2026-05-16)
 
 ## 快速命令
 
@@ -26,18 +16,22 @@ source venv/bin/activate
 
 # 运行测试
 pytest tests/ -v
+pytest tests/test_agent_loop.py -v  # 单文件测试
 
-# 启动交互模式（直接进入对话）
+# 启动 Agent 模式（默认，LLM 自主决策 + 多步工具调用）
 keeper
+
+# 启动经典路由器模式
+keeper --classic
 
 # 单命令执行
 keeper run 检查 192.168.1.100
 
 # 执行 Shell 命令
 keeper exec -- df -h /
-keeper exec -- ps aux --sort=-%mem
 
 # 配置管理
+keeper config set --api-key YOUR_API_KEY --model claude-sonnet-4-6
 keeper config set --threshold 80 --metric cpu
 keeper config show
 
@@ -46,135 +40,126 @@ keeper logs --hours 24
 keeper logs --host 192.168.1.100
 ```
 
-## 技术架构
+## 核心架构：Hybrid Agent (Fast Path + Agent Loop)
 
-### 核心模块
+默认模式 `keeper` 使用 `keeper/agent/hybrid.py:HybridAgent`，输入流程如下：
 
-| 模块 | 文件 | 说明 |
-|------|------|------|
-| NLU 引擎 | `keeper/nlu/` | LangChain + LLM 意图识别 |
-| Agent 核心 | `keeper/core/` | 意图分发、上下文管理、审计日志 |
-| 工具 | `keeper/tools/` | 服务器采集、扫描、报告导出、日志查询、K8s 管理 |
-| CLI | `keeper/cli.py` | Click + Prompt Toolkit 交互 |
-| 配置 | `keeper/config.py` | 环境变量 + YAML 配置 |
+```
+用户输入
+  → [Fast Path] — 正则匹配确定性指令（帮助/退出/清空等）
+  → 未命中 → [Agent Loop] — LLM 自主规划 + 多步工具调用（ReAct Loop）
+  → Agent Loop 失败 → [降级] — 经典路由器模式兜底
+```
 
-### 意图路由 (`keeper/core/agent.py`)
+### Agent Loop 双模式（`keeper/agent/loop.py`）
 
-| 意图 | 处理器 | 功能 |
-|------|--------|------|
-| `inspect` | `_handle_inspect` | 服务器资源巡检 |
-| `scan` | `_handle_scan` | 漏洞扫描 |
-| `config` | `_handle_config` | 配置管理 |
-| `logs` | `_handle_logs` | 日志查询（审计/系统/Docker） |
-| `export` | `_handle_export` | 报告导出（JSON/HTML/MD） |
-| `install` | `_handle_install` | 软件安装 |
-| `confirm` | `_handle_confirm` | 确认执行 |
+`AgentLoop` 支持自动降级的运行模式：
+1. **LangGraph ReAct Agent**（推荐，`langgraph>=0.2`）：使用 `create_react_agent`
+2. **手动 ReAct 循环**（兼容，仅需 `langchain`）：LLM bind_tools + 手动消息循环
+3. **不可用**：抛出明确错误提示安装 langchain/langgraph
+
+关键参数：`MAX_LOOPS=10`, `MAX_OUTPUT_LEN=2000`（工具输出截断）, `MAX_HISTORY_TURNS=5`
+
+### 工具注册中心（`keeper/agent/tools_registry.py`）
+
+所有运维工具使用 `@tool` 装饰器注册为 LLM 可调用的函数。LLM 根据 docstring 理解工具用途并自主决定调用时机。支持两种模式：
+- 有 `langchain_core`：使用 LangChain `@tool` 装饰器
+- 无 `langchain_core`：fallback 装饰器保持函数可调用
+
+`ALL_TOOLS` 列表包含 18 个工具（服务器监控、日志查询、网络诊断、K8s 管理、Docker、安全、SSH 远程、Shell 执行）。
+
+### 模块结构
+
+```
+keeper/
+├── agent/                    ← Agent Loop 引擎（新增）
+│   ├── loop.py              ← ReAct Agent Loop（LangGraph / 手动两种模式）
+│   ├── hybrid.py            ← HybridAgent — Fast Path + Agent Loop 混合入口
+│   ├── planner.py           ← 执行计划生成器 + 6 个预定义排查模板
+│   ├── memory.py            ← AgentMemory 长期记忆（持久化到 ~/.keeper/agent_memory.json）
+│   ├── safety.py            ← CommandSafetyChecker 四级安全审查 + TOOL_PERMISSIONS 表
+│   └── tools_registry.py    ← 18 个 @tool 注册 + ALL_TOOLS + get_tools_description()
+├── core/
+│   ├── agent.py             ← 经典路由器模式（降级兜底，保留）
+│   ├── audit.py             ← 审计日志
+│   └── context.py           ← AgentState
+├── nlu/
+│   ├── base.py              ← IntentType 枚举
+│   └── langchain_engine.py  ← LangChain LLM 引擎 + _try_fast_match
+├── tools/                   ← 底层工具实现
+│   ├── server.py, docker_tools.py, scanner.py, network.py
+│   ├── rca.py, fixer.py, cert_monitor.py, notify.py, scheduler.py
+│   ├── logs.py, reporter.py, ssh.py, alert.py
+│   └── k8s/                 ← K8s 子模块（client, inspector, formatter, logs, ops）
+├── cli.py                   ← Click + Prompt Toolkit 入口
+└── config.py                ← AppConfig（环境变量 + YAML）
+```
+
+### 安全控制（`keeper/agent/safety.py`）
+
+四级安全检查：`READ_ONLY`（直接执行）→ `WRITE`（需确认）→ `DESTRUCTIVE`（强制确认+警告）→ `DANGEROUS`（绝对拒绝）。
+
+每个工具在 `TOOL_PERMISSIONS` 表中预定义安全等级。`execute_shell_command` 内部有额外正则检查。
+
+### 计划模式（`keeper/agent/planner.py`）
+
+6 个预定义排查模板：`cpu_high`, `service_down`, `k8s_issue`, `security_audit`, `disk_full`, `network_issue`。简单任务直接执行，复杂任务（匹配 `为什么/排查/分析/全面` 等关键词）先展示计划，用户确认后执行。
+
+### 记忆系统（`keeper/agent/memory.py`）
+
+- 短期记忆：`AgentLoop.conversation_history`（当前会话）
+- 长期记忆：`AgentMemory` 持久化到 `~/.keeper/agent_memory.json`（最近 100 条），支持按关键词搜索和主机历史查询
+
+### CLI 入口
+
+```bash
+keeper              # 默认 Agent 模式（HybridAgent）
+keeper --classic     # 经典路由器模式
+keeper agent        # 显式启动 Agent 模式
+keeper chat         # 显式启动经典模式
+```
+
+特殊命令：`/clear`, `/history`, `/tools`, `/mode`
+
+## 依赖
+
+| 依赖 | 用途 |
+|------|------|
+| langchain >= 0.3 | LLM 框架 |
+| langgraph >= 0.2 | Agent Loop（ReAct 引擎） |
+| langchain-openai >= 0.2 | OpenAI 兼容 API |
+| langchain-anthropic >= 0.2 | Anthropic API |
+| click + prompt-toolkit | CLI 交互 |
+| kubernetes >= 28.1 | K8s SDK (可选) |
 
 ## 配置
 
-### 配置文件位置
-
-| 文件 | 路径 | 说明 |
-|------|------|------|
-| 配置文件 | `~/.keeper/config.yaml` | 所有配置（LLM、环境、阈值、主机列表） |
-
-### 配置结构
+配置文件：`~/.keeper/config.yaml`
 
 ```yaml
-# ~/.keeper/config.yaml
 current_profile: dev
 profiles:
   dev:
     hosts: [localhost]
     thresholds: {cpu: 90, memory: 90, disk: 95}
 llm:
-  provider: openai_compatible
+  provider: openai_compatible  # 或 anthropic
   api_key: sk-xxx
   base_url: https://api.qnaigc.com/v1
   model: doubao-seed-2.0-mini
-```
-
-### 配置命令
-
-```bash
-keeper config set --api-key YOUR_API_KEY --model claude-sonnet-4-6
-keeper config set --threshold 80 --metric cpu
-keeper config show
-keeper config clear
+k8s:
+  kubeconfig: ""  # 留空自动检测
+  context: ""
+  cluster_type: k8s  # k8s/k3s
+notifications:
+  feishu_webhook: ""
+  feishu_secret: ""
 ```
 
 ## 开发注意事项
 
-1. **虚拟环境：** 所有命令需先激活 `venv/bin/activate`
-2. **测试：** 修改代码后运行 `pytest tests/ -v`
-3. **LLM 依赖：** 需要有效的 API Key 才能测试 NLU 功能
-4. **本地采集：** `ServerTools.inspect_server("localhost")` 无需远程连接
-5. **Nmap 依赖：** 漏洞扫描需要系统安装 `nmap` 包
-6. **CLI 入口：** `keeper` 直接进入交互模式（`invoke_without_command=True`）
-
-## 已实现功能
-
-### Phase 1 - MVP ✅
-- CLI 框架、NLU 引擎、服务器巡检、配置管理、对话记忆
-
-### Phase 2 - 增强功能 ✅
-- 报告导出 (JSON/HTML/Markdown)、审计日志持久化、系统日志查询 (journalctl/文件/Docker)、多主机批量巡检、SSH 远程采集
-
-## Phase 3 - K8s 集群管理 (v0.3.0) ✅ 已完成
-
-### K8s 客户端封装 ✅
-- [x] `keeper/tools/k8s/client.py` — 基于 `kubernetes` Python SDK 封装
-- [x] kubeconfig 加载与多集群上下文切换
-- [x] 连接健康检查与超时重试
-- [x] 自动检测 kubeconfig 路径（K3s/标准 K8s/in-cluster）
-- [x] 自动识别集群类型（k8s/k3s）
-
-### 资源状态检查 ✅
-- [x] Node 状态检查 (Ready/角色/版本/资源容量)
-- [x] Pod 状态检查与异常检测 (Pending/Failed/CrashLoopBackOff/OOMKilled/ImagePullBackOff)
-- [x] Deployment/StatefulSet/DaemonSet 状态检查 (副本数/滚动更新/进度)
-- [x] Service 配置检查 (类型/端口映射/Endpoints 健康)
-- [x] PVC/PV 存储状态检查 (容量/绑定状态/StorageClass)
-
-### K8s 巡检工具 ✅
-- [x] `keeper/tools/k8s/inspector.py` — K8s 集群一键巡检
-- [x] Namespace 资源配额监控 (ResourceQuota)
-- [x] 集群事件聚合分析 (Warning 事件归类/去重)
-- [x] 巡检结果与现有 ServerTools 输出格式统一
-- [x] 健康评分计算 (0-100)
-- [x] `keeper/tools/k8s/formatter.py` — 报告格式化输出
-
-### Pod 日志查询 ✅
-- [x] `keeper/tools/k8s/logs.py` — Pod 日志查询
-- [x] Pod 模糊匹配/前缀匹配
-- [x] 关键词过滤/行数限制/容器指定
-- [x] Pod 内命令执行 (exec)
-
-### NLU 意图扩展 ✅
-- [x] `k8s_inspect` — "检查 K8s 集群状态" / "查看 Pod 情况" / "K8s 巡检"
-- [x] `k8s_logs` — "查看 xxx Pod 的日志"
-- [x] `k8s_export` — "导出 K8s 巡检报告"
-- [x] `k8s_config` — "帮我配置 K8s"
-
-### CLI 扩展 ✅
-- [x] `keeper k8s inspect` — K8s 集群巡检
-- [x] `keeper k8s logs <pod>` — 查看 Pod 日志
-- [x] `keeper k8s events` — 查看集群事件
-- [x] 配置文件 K8s 配置 (`config set --k8s-kubeconfig/--k8s-context/--k8s-type`)
-
-### 交互设计 ✅
-- [x] 自动检测 K3s/标准 K8s 环境并自动配置
-- [x] 多个 kubeconfig 时询问用户选择
-- [x] 问题排查模式（系统日志查询自动检测异常）
-
-## Phase 4 - 智能分析与变更 (v0.4.0) 规划中
-- [ ] 根因分析 (RCA) — 基于巡检结果的异常归因
-- [ ] 告警分析 — 接入 Prometheus Alertmanager 告警历史
-- [ ] 自动修复建议 — LLM 生成修复命令 + 人工确认执行
-- [ ] 变更管理 — 扩缩容/重启/回滚的对话式操作
-
-## Phase 5 - 安全与集成 (v0.5.0) 规划中
-- [ ] 安全基线检查 — CIS Benchmark 自动化扫描
-- [ ] 操作审计报表 — 定期生成运维操作审计报告
-- [ ] 告警集成 — Prometheus/Webhook 告警接入
-- [ ] IM 通知集成 — 钉钉/企业微信/Slack 消息推送
+- 所有命令需先激活 `venv/bin/activate`
+- LLM 依赖：需要有效的 API Key 才能测试 Agent/ NLU 功能
+- 漏洞扫描需要系统安装 `nmap`
+- `ServerTools.inspect_server("localhost")` 无需远程连接，可用于本地测试
+- K8s 客户端自动检测 kubeconfig（K3s/标准 K8s/in-cluster），无需手动配置

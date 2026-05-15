@@ -1,0 +1,49 @@
+name: disk_cleanup
+description: 磁盘空间清理标准流程
+trigger: disk_percent > 90
+variables:
+  threshold: 85
+  log_retention_days: 30
+tags: [disk, cleanup, maintenance]
+
+steps:
+  - name: 检查当前磁盘使用率
+    action: shell
+    command: "df -h / | tail -1"
+    safety: safe
+    timeout: 10
+
+  - name: 查找大文件
+    action: shell
+    command: "find /var/log -type f -size +100M -exec ls -lh {} \\; 2>/dev/null | head -20"
+    safety: safe
+    timeout: 30
+
+  - name: 查看日志目录大小
+    action: shell
+    command: "du -sh /var/log/* 2>/dev/null | sort -rh | head -10"
+    safety: safe
+    timeout: 15
+
+  - name: 清理旧日志文件
+    action: shell
+    command: "find /var/log -name '*.gz' -mtime +{{log_retention_days}} -delete"
+    safety: destructive
+    confirm: true
+    timeout: 60
+    on_fail: continue
+    rollback: "echo '已删除的日志文件无法恢复'"
+
+  - name: 清理 apt 缓存
+    action: shell
+    command: "apt-get clean 2>/dev/null || yum clean all 2>/dev/null || true"
+    safety: caution
+    confirm: true
+    timeout: 30
+
+  - name: 验证磁盘使用率
+    action: shell
+    command: "df -h / | awk '{print $5}' | tail -1 | tr -d '%'"
+    safety: safe
+    timeout: 10
+    expect: "< {{threshold}}"
