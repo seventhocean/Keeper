@@ -15,6 +15,11 @@ import json
 import tempfile
 from pathlib import Path
 
+import pytest
+
+# 标记整个模块为集成测试
+pytestmark = pytest.mark.integration
+
 from keeper.config import AppConfig, LLMConfig
 from keeper.agent.hybrid import HybridAgent, _classify_input
 from keeper.agent.loop import AgentLoop, LANGCHAIN_AVAILABLE, LANGGRAPH_AVAILABLE

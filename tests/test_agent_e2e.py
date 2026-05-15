@@ -9,9 +9,13 @@
 import sys
 sys.path.insert(0, ".")
 
+import pytest
 from unittest.mock import patch, MagicMock
 from keeper.agent.hybrid import HybridAgent
 from keeper.config import AppConfig, LLMConfig
+
+# 标记为集成测试
+pytestmark = pytest.mark.integration
 
 
 def make_config(configured: bool = False) -> AppConfig:
