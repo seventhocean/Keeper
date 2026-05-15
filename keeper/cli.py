@@ -180,7 +180,9 @@ def _interactive_api_setup(config):
 
 
 def _create_stream_callback():
-    """创建流式输出回调"""
+    """创建流式输出回调 — 工具调用先显示 ⏳，完成后替换为 ✓"""
+    pending = {}  # tool_name → 缓存信息
+
     def stream_callback(event):
         if isinstance(event, dict):
             etype = event.get("type", "")
@@ -188,11 +190,24 @@ def _create_stream_callback():
                 click.echo(click.style(f"  🤔 {event.get('message', '')}", fg='bright_black'), nl=False)
             elif etype == "tool_call":
                 args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
-                click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+                line = f"  🔧 {event['tool']}({args_str})  ⏳"
+                pending[event["tool"]] = line
+                click.echo(click.style(line, fg='cyan'))
             elif etype == "tool_result":
+                tool = event.get("tool", "")
                 icon = "✓" if event.get("success") else "✗"
                 color = 'green' if event.get("success") else 'red'
-                click.echo(click.style(f" {icon} ({event.get('duration_ms', 0)}ms)", fg=color))
+                ms = event.get('duration_ms', 0)
+                # 找到之前的行并原地替换
+                old_line = pending.pop(tool, f"  🔧 {tool}")
+                # 去掉末尾的 ⏳，加上结果
+                new_line = old_line.replace("  ⏳", f"  {icon} ({ms}ms)")
+                if icon == "✓":
+                    # 光标上移一行，清屏，重写
+                    sys.stdout.write(f"\033[F\033[2K")
+                    click.echo(click.style(new_line, fg=color))
+                else:
+                    click.echo(click.style(f"    {icon} 失败 ({ms}ms)", fg=color))
             elif etype == "text":
                 click.echo(click.style(event.get("content", ""), fg='white'), nl=False)
             elif etype == "warning":
@@ -295,14 +310,15 @@ def run(command, host, profile, full, classic):
         agent = HybridAgent(config)
 
         def run_callback(event):
-            """单命令模式流式回调 — 简化输出"""
+            """单命令模式流式回调 — 工具调用先 ⏳ 后替换为 ✓"""
             if isinstance(event, dict):
                 if event.get("type") == "tool_call":
                     args_str = ", ".join(f"{k}={repr(v)}" for k, v in (event.get("args") or {}).items())
-                    click.echo(click.style(f"  🔧 {event['tool']}({args_str})", fg='cyan'), nl=False)
+                    click.echo(click.style(f"  🔧 {event['tool']}({args_str})  ⏳", fg='cyan'))
                 elif event.get("type") == "tool_result":
                     icon = "✓" if event.get("success") else "✗"
-                    click.echo(click.style(f" {icon}", fg='green' if event.get("success") else 'red'))
+                    sys.stdout.write(f"\033[F\033[2K")
+                    click.echo(click.style(f"  🔧 {event.get('tool','')}  {icon} ({event.get('duration_ms',0)}ms)", fg='green' if event.get('success') else 'red'))
                 elif event.get("type") == "warning":
                     click.echo(click.style(f"  ⚠️ {event.get('message', '')}", fg='yellow'))
                 elif event.get("type") == "thinking":
