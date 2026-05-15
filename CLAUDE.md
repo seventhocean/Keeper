@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keeper** - 智能运维 Agent，类似 Claude Code 的对话式 CLI 工具
 
-**版本：** v0.5.0-dev (2026-05-15)
+**版本：** v1.0.0 (2026-05-16)
 
 ## 快速命令
 

@@ -86,7 +86,7 @@ def create_app() -> "FastAPI":
     app = FastAPI(
         title="Keeper API",
         description="智能运维 Agent HTTP API",
-        version="0.5.0-dev",
+        version="1.0.0",
     )
 
     # CORS
@@ -124,7 +124,7 @@ def create_app() -> "FastAPI":
     @app.get("/health", response_model=HealthResponse)
     async def health():
         """健康检查（无需认证）"""
-        return HealthResponse(status="ok", version="0.5.0-dev")
+        return HealthResponse(status="ok", version="1.0.0")
 
     @app.get("/api/v1/status", response_model=StatusResponse, dependencies=[Depends(verify_token)])
     async def get_status():
@@ -132,7 +132,7 @@ def create_app() -> "FastAPI":
         config = app.state.config
         uptime = int(time.time() - app.state.start_time)
         return StatusResponse(
-            version="0.5.0-dev",
+            version="1.0.0",
             llm_configured=config.is_llm_configured(),
             mode="agent",
             uptime_seconds=uptime,

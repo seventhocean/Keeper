@@ -22,13 +22,13 @@ STYLE = Style.from_dict({
 
 BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.5.0-dev - 智能运维平台        │
+│  Keeper v1.0.0 - 智能运维平台            │
 └─────────────────────────────────────────┘
 """
 
 AGENT_BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.5.0-dev - Agent 模式          │
+│  Keeper v1.0.0 - Agent 模式              │
 │  LLM 自主决策 + 多步工具调用             │
 └─────────────────────────────────────────┘
 """
@@ -57,7 +57,7 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.5.0-dev')
+@click.version_option(version='1.0.0')
 @click.option('--classic', is_flag=True, help='使用经典路由器模式（不使用 Agent Loop）')
 @click.pass_context
 def cli(ctx, classic):
