@@ -349,6 +349,8 @@ class AgentLoop:
                         consecutive_same_tool = 0
                     last_tool_name = tool_name
 
+                    t_duration = 0
+
                     if consecutive_same_tool >= 3:
                         result = f"[提示] 你已连续调用 {tool_name} 3次，请尝试其他工具或给出结论。"
                     else:
@@ -387,7 +389,7 @@ class AgentLoop:
                         tool_name=tool_name,
                         args=tool_args,
                         result=result[:500],
-                        duration_ms=t_duration if 't_duration' in dir() else 0,
+                        duration_ms=t_duration,
                         success=not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
                     ))
 
