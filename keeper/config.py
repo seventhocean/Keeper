@@ -102,6 +102,7 @@ class AppConfig:
     """应用配置"""
     log_level: str = "INFO"
     current_profile: str = "default"
+    language: str = "zh"  # 语言设置 (zh / en)
     llm: LLMConfig = field(default_factory=LLMConfig)
     profiles: Dict[str, Any] = field(default_factory=dict)
     k8s: Dict[str, Any] = field(default_factory=dict)  # K8s 集群配置
@@ -153,6 +154,7 @@ class AppConfig:
                 data = yaml.safe_load(f)
                 if data:
                     self.current_profile = data.get("current_profile", "default")
+                    self.language = data.get("language", "zh")
                     self.profiles = data.get("profiles", {})
                     self.k8s = data.get("k8s", {})
                     self.notifications = data.get("notifications", {})
@@ -174,6 +176,7 @@ class AppConfig:
             with open(self.config_file, "w") as f:
                 yaml.safe_dump({
                     "current_profile": self.current_profile,
+                    "language": self.language,
                     "profiles": self.profiles,
                     "k8s": self.k8s,
                     "notifications": self.notifications,

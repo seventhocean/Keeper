@@ -257,6 +257,14 @@ class HybridAgent:
 
     def _get_help_text(self) -> str:
         """帮助信息"""
+        try:
+            from keeper.i18n import get_help_text
+            help_text = get_help_text()
+            if help_text and help_text != "agent.help":
+                return help_text
+        except Exception:
+            pass
+
         from .free_tools import get_free_tools_description
         return f"""[Keeper Agent 模式 — 自由模式]
 
