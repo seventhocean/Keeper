@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "keeper"
-version = "0.4.0-dev"
-description = "智能运维助手 - 交互式 CLI 工具"
+version = "0.5.0-dev"
+description = "智能运维助手 - 交互式 CLI 工具（Agent Loop 模式）"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
@@ -13,6 +13,7 @@ dependencies = [
     "langchain-core>=0.3.0",
     "langchain-openai>=0.2.0",
     "langchain-anthropic>=0.2.0",
+    "langgraph>=0.2.0",
     "pydantic>=2.0",
     "click>=8.0",
     "prompt-toolkit>=3.0",

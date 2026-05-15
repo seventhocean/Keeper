@@ -22,7 +22,14 @@ STYLE = Style.from_dict({
 
 BANNER = """
 ┌─────────────────────────────────────────┐
-│  Keeper v0.4.0-dev - 智能运维平台        │
+│  Keeper v0.5.0-dev - 智能运维平台        │
+└─────────────────────────────────────────┘
+"""
+
+AGENT_BANNER = """
+┌─────────────────────────────────────────┐
+│  Keeper v0.5.0-dev - Agent 模式          │
+│  LLM 自主决策 + 多步工具调用             │
 └─────────────────────────────────────────┘
 """
 
@@ -50,13 +57,19 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='0.4.0-dev')
+@click.version_option(version='0.5.0-dev')
+@click.option('--classic', is_flag=True, help='使用经典路由器模式（不使用 Agent Loop）')
 @click.pass_context
-def cli(ctx):
+def cli(ctx, classic):
     """Keeper - 智能运维助手"""
+    ctx.ensure_object(dict)
+    ctx.obj['classic'] = classic
     if ctx.invoked_subcommand is None:
         # 没有子命令时，启动交互模式
-        start_chat()
+        if classic:
+            start_chat()
+        else:
+            start_agent_chat()
 
 
 def start_chat():
@@ -114,8 +127,71 @@ def start_chat():
 
 @cli.command()
 def chat():
-    """启动交互式对话模式"""
+    """启动交互式对话模式（经典路由器模式）"""
     start_chat()
+
+
+@cli.command()
+def agent():
+    """启动 Agent 模式（LLM 自主决策 + 多步工具调用）"""
+    start_agent_chat()
+
+
+def start_agent_chat():
+    """启动 Agent Loop 交互模式（类 Claude Code）"""
+    # 加载配置
+    config = AppConfig.from_env()
+    config.load()
+
+    # 检查 API Key
+    if not config.is_llm_configured():
+        click.echo(click.style("[错误] Agent 模式需要 LLM 配置:", fg='red'))
+        click.echo("\n使用以下命令配置:")
+        click.echo("  keeper config set --api-key YOUR_API_KEY")
+        click.echo("\n或使用经典模式:")
+        click.echo("  keeper --classic")
+        sys.exit(1)
+
+    # 创建 Hybrid Agent
+    from .agent.hybrid import HybridAgent
+    agent = HybridAgent(config)
+
+    # 流式输出回调
+    def stream_callback(text):
+        click.echo(click.style(text, fg='cyan'), nl=False)
+
+    agent.set_stream_callback(stream_callback)
+
+    # 打印欢迎语
+    click.echo(AGENT_BANNER, color=True)
+    click.echo(click.style("🤖 Keeper Agent 模式已启动", fg='green'))
+    click.echo("   我会自动分析问题、选择工具、逐步排查。")
+    click.echo("   输入任何运维问题，或输入 '帮助' 查看能力，'退出' 结束会话\n")
+
+    # REPL 循环
+    while agent.state.is_running:
+        try:
+            user_input = prompt(
+                [('class:prompt', 'keeper🤖> ')],
+                style=STYLE,
+                history=FileHistory(os.path.expanduser('~/.keeper/agent_history.txt')),
+                auto_suggest=AutoSuggestFromHistory(),
+            ).strip()
+
+            if not user_input:
+                continue
+
+            # 处理输入
+            response = agent.process(user_input)
+            click.echo(f"\n{response}\n")
+
+        except KeyboardInterrupt:
+            continue
+        except EOFError:
+            click.echo(click.style("\n👋 再见！", fg='green'))
+            break
+        except Exception as e:
+            click.echo(click.style(f"[错误] {e}\n", fg='red'))
 
 
 @cli.command(context_settings={'ignore_unknown_options': True})
