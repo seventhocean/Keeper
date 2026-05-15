@@ -1,288 +1,269 @@
 # Keeper 功能清单与测试方法
 
-> 版本: v0.5.0-dev | 更新: 2026-05-15
+> 版本: v0.5.0-dev | 更新: 2026-05-16 | 测试: 374 passed
 
 ---
 
-## 一、Agent 模式（默认交互入口）
+## 一、Agent 模式（默认）
 
-### 1.1 混合 Agent（Fast Path + Agent Loop）
+### 1.1 启动方式
+
+```bash
+keeper                      # Agent 交互模式（默认，LLM 多步推理）
+keeper agent                # 显式 Agent 模式
+keeper --classic            # 经典路由器模式
+keeper run <命令>           # 单命令执行（Agent 模式）
+keeper run --classic <命令> # 单命令（经典模式）
+```
+
+### 1.2 Hybrid Agent 执行流程
 
 ```
-keeper                    # 启动 Agent 模式
-keeper agent              # 显式启动 Agent 模式
-keeper --classic           # 经典路由器模式
+用户输入
+  → [Fast Path] 正则匹配确定性指令（帮助/退出）→ 直接返回
+  → [Agent Loop] LLM 自主规划 + 多步工具调用
+  → [降级] 经典路由器模式兜底
 ```
 
 **测试方法：**
 
 ```bash
-# 确保已配置 LLM
-keeper config show
-
-# 进入交互模式
 keeper
-
-# 输入以下自然语言指令：
-#   "检查本机服务器状态"
-#   "测试 8.8.8.8 的延迟"
-#   "查看 Docker 容器状态"
-#   "帮我分析一下为什么 CPU 高"
-#   "检查系统有没有安全风险"
-
-# 退出
-输入: exit 或 退出 或 Ctrl+D
+# 输入自然语言，观察 Agent 是否自主选择工具、多步执行
+输入: 检查本机服务器状态
+输入: 测试 8.8.8.8 的延迟和 baidu.com 的 DNS
+输入: 分析一下为什么 CPU 高
+输入: 安全审计这台机器
+输入: 退出
 ```
 
-```bash
-# 单命令模式（走经典路由器）
-keeper run 检查本机
-keeper run 测试 8.8.8.8 的延迟
+### 1.3 流式执行
+
+Agent Loop 使用 LangGraph `stream(stream_mode="updates")`，工具调用和结果实时展示。
+
 ```
-
-### 1.2 Agent Loop 工具调用（18 个工具）
-
-| # | 工具名 | 功能 | 安全等级 |
-|---|--------|------|----------|
-| 1 | `inspect_server` | 服务器资源巡检 (CPU/内存/磁盘/负载) | 只读 |
-| 2 | `get_top_processes` | Top N 进程列表 | 只读 |
-| 3 | `query_system_logs` | journalctl 系统日志查询 | 只读 |
-| 4 | `read_log_file` | 读取日志文件 | 只读 |
-| 5 | `ping_host` | ICMP Ping 测试 | 只读 |
-| 6 | `check_port` | 端口连通性检测 | 只读 |
-| 7 | `dns_lookup` | DNS 解析查询 | 只读 |
-| 8 | `k8s_cluster_inspect` | K8s 集群全面巡检 | 只读 |
-| 9 | `k8s_pod_logs` | Pod 日志查询 | 只读 |
-| 10 | `k8s_scale_deployment` | Deployment 扩缩容 | 写入 |
-| 11 | `k8s_restart_deployment` | Deployment 滚动重启 | 写入 |
-| 12 | `docker_list_containers` | Docker 容器列表 | 只读 |
-| 13 | `docker_container_logs` | Docker 容器日志 | 只读 |
-| 14 | `scan_ports` | 端口扫描 (nmap) | 只读 |
-| 15 | `check_ssl_cert` | SSL/TLS 证书检查 | 只读 |
-| 16 | `manage_systemd_service` | systemd 服务管理 | 写入 |
-| 17 | `inspect_remote_server` | SSH 远程服务器巡检 | 只读 |
-| 18 | `execute_shell_command` | 安全 Shell 执行 | 写入 |
+🤔 Agent 分析中...
+🔧 inspect_server(localhost)  ✓ (123ms)
+🔧 ping_host(8.8.8.8)         ✓ (34ms)
+```
 
 **测试方法：**
 
 ```bash
-# 进入 Agent 模式
 keeper
-
-# 触发工具调用（LLM 自主选择工具）
-输入: "检查本机"                          → 触发 inspect_server + get_top_processes
-输入: "测试连接到 baidu.com"                → 触发 ping_host + dns_lookup
-输入: "看一下 nginx 的错误日志"             → 触发 query_system_logs
-输入: "端口 22 和 80 通不通"               → 触发 check_port
-输入: "Docker 容器什么状态"                 → 触发 docker_list_containers
-输入: "检查 baidu.com 的 SSL 证书"          → 触发 check_ssl_cert
-输入: "安全审计这台机器"                    → 触发 scan_ports + check_ssl_cert
-
-# 查看执行记录
-输入: /history
-输入: /memory
+输入: 检查本机，还要 ping 一下 8.8.8.8
+# 应看到工具调用逐个实时出现，而非执行完一次性显示
 ```
 
-### 1.3 Fast Path（免 LLM 快速响应）
+### 1.4 错误恢复
+
+- 同一工具连续 3 次 → ⚠️ 警告 + 提示换工具
+- 工具执行异常 → LLM 看到错误后自主选择其他工具
+- LangGraph 流式异常 → 自动降级到阻塞模式
+- MAX_LOOPS 硬限制（手动 ReAct: 10 / LangGraph: recursion_limit=50）
+
+**测试方法：**
+
+```bash
+# 模拟错误恢复（LLM 应自主换工具）
+keeper
+输入: 检查 192.0.2.1 能不能连通，端口 9999 通不通
+# 应看到 ping + check_port 两个不同工具被调用
+```
+
+### 1.5 自服务引导
+
+遇到缺失依赖或配置时，Agent 主动引导用户解决：
+
+| 场景 | 引导内容 |
+|------|---------|
+| SSH 连接失败 | 询问用户名/密钥路径/密码/端口 |
+| K8s 无 kubeconfig | 引导配置 kubeconfig 或用 kubectl 替代 |
+| nmap 未安装 | 提供跨平台安装命令，询问是否帮装 |
+| kubernetes SDK 未安装 | 建议 pip install 或用 kubectl CLI |
+| 首次启动无 API Key | 交互式配置向导，不退出 |
+
+**测试方法：**
+
+```bash
+# 测试 K8s 引导（未安装 SDK）
+keeper run 检查 K8s 集群
+# 应看到: "你可以帮用户安装: pip install kubernetes 或用 kubectl 替代"
+
+# 测试 SSH 引导（连接不可达主机）
+keeper
+输入: 检查 192.168.1.100 的服务器状态
+# Agent 应询问 SSH 凭据而不是只报错
+```
+
+### 1.6 特殊命令
 
 ```
-输入: 帮助 / help          → 显示能力列表
-输入: 退出 / exit / quit   → 退出
+帮助 / help     → 显示能力列表
+退出 / exit     → 结束会话
+/clear          → 清空对话历史
+/history        → 查看上次执行详情
+/tools          → 列出所有可用工具
+/mode           → 查看当前运行模式
+/memory         → 查看历史操作记忆
 ```
 
 **测试方法：**
 
 ```bash
-keepr            # 进入 Agent 模式
-输入: 帮助      → 应立即显示（不等待 LLM）
-输入: /clear    → 清空历史
-输入: /tools    → 列出所有工具
-输入: /mode     → 显示当前模式
-输入: /memory   → 显示历史记忆
-输入: /history  → 显示上次执行详情
+keeper
+输入: /tools    # 应显示 21 个工具
+输入: /mode     # 应显示 Agent Loop (langgraph)
+输入: /memory   # 应先显示记忆（如有历史操作）
+输入: /clear    # 应清空对话
 ```
 
 ---
 
-## 二、CLI 命令（经典模式）
+## 二、21 个 Agent 工具
 
-### 2.1 服务器巡检
+### 结构化工具（16 个）
+
+| # | 工具 | 说明 | 分类 |
+|---|------|------|------|
+| 1 | inspect_server | 服务器巡检 + 自动告警 | 采集 |
+| 2 | get_top_processes | Top N 进程 | 采集 |
+| 3 | query_system_logs | journalctl 查询 | 日志 |
+| 4 | read_log_file | 文件读取 | 日志 |
+| 5 | ping_host | Ping 测试 | 网络 |
+| 6 | check_port | 端口检测 | 网络 |
+| 7 | dns_lookup | DNS 解析 | 网络 |
+| 8 | k8s_cluster_inspect | 集群巡检 | K8s |
+| 9 | k8s_pod_logs | Pod 日志 | K8s |
+| 10 | k8s_scale_deployment | 扩缩容 | K8s |
+| 11 | k8s_restart_deployment | 滚动重启 | K8s |
+| 12 | docker_list_containers | 容器列表 | Docker |
+| 13 | docker_container_logs | 容器日志 | Docker |
+| 14 | scan_ports | nmap 端口扫描 | 安全 |
+| 15 | check_ssl_cert | SSL 证书检查 | 安全 |
+| 16 | manage_systemd_service | 服务管理 | 运维 |
+
+### Runbook 工具（3 个）
+
+| # | 工具 | 说明 | 来源 |
+|---|------|------|------|
+| 17 | runbook_disk_cleanup | 6 步磁盘清理流程 | disk_cleanup.yaml |
+| 18 | runbook_service_restart | 4 步服务重启（含验证回滚） | service_restart.yaml |
+| 19 | runbook_log_rotate | 3 步日志轮转 | log_rotate.yaml |
+
+### 自由工具（5 个 — 仅 tool_mode=free/all 时可用）
+
+| # | 工具 | 说明 |
+|---|------|------|
+| 20 | run_bash | 任意 Bash |
+| 21 | read_file | 读文件 |
+| - | write_file | 写文件 |
+| - | list_directory | 列目录 |
+| - | search_files | 搜索文件 |
+
+**测试方法：**
+
+```bash
+# 查看完整列表
+keeper
+输入: /tools
+
+# 验证结构化工具被优先使用（而非纯 run_bash）
+keeper
+输入: 检查本机服务器
+# 应看到 inspect_server + get_top_processes（结构化）
+# 仅在无合适工具时降级到 run_bash
+```
+
+---
+
+## 三、CLI 命令（经典模式）
+
+### 3.1 服务器巡检
 
 ```bash
 keeper run 检查本机
-keeper run 检查 192.168.1.100
-keeper run 批量巡检所有主机
 keeper exec -- df -h /
 keeper exec -- ps aux --sort=-%mem
 ```
 
-**测试方法：**
+### 3.2 K8s 集群管理
 
 ```bash
-keeper run 检查本机
-# 应输出: CPU、内存、磁盘、负载、Top 进程、健康评分
-```
-
-### 2.2 K8s 集群管理
-
-```bash
-keeper k8s inspect                        # 集群巡检
-keeper k8s inspect -n kube-system         # 指定命名空间
-keeper k8s logs <pod-name>                # Pod 日志
-keeper k8s logs nginx -n default -l 200   # 指定行数
-keeper k8s events                         # Warning 事件
-keeper k8s events -n kube-system          # 指定命名空间
-keeper k8s exec <pod> -- ls /             # Pod 内执行命令
-keeper k8s scale <deploy> -r 5            # 扩缩容
-keeper k8s restart <deploy> -n production # 滚动重启
-```
-
-**测试方法：**
-
-```bash
-# 需要 kubernetes SDK 和有效的 kubeconfig
-pip install kubernetes
 keeper k8s inspect
+keeper k8s inspect -n kube-system
+keeper k8s logs <pod> -n default -l 200
 keeper k8s events
+keeper k8s exec <pod> -- ls /
+keeper k8s scale <deploy> -r 5
+keeper k8s restart <deploy>
 ```
 
-### 2.3 Docker 管理
+**测试方法：** 未安装 kubernetes SDK 时应有友好提示（无 Python traceback）。
 
-```bash
-keeper docker ls         # 容器列表
-keeper docker stats      # 资源统计
-keeper docker images     # 镜像列表
-keeper docker prune      # 清理无用镜像
-```
-
-**测试方法：**
+### 3.3 Docker 管理
 
 ```bash
 keeper docker ls
-# 应输出: 运行中/已停止容器数、镜像数、磁盘使用、健康评分
+keeper docker stats
+keeper docker images
+keeper docker prune
 ```
 
-### 2.4 网络诊断
+### 3.4 网络诊断
 
 ```bash
-keeper network ping 8.8.8.8
-keeper network ping 8.8.8.8 -c 10
+keeper network ping 8.8.8.8 -c 4
 keeper network port baidu.com 443
 keeper network dns baidu.com
 keeper network http https://baidu.com
 ```
 
-**测试方法：**
+### 3.5 安全扫描
 
 ```bash
-keeper network ping 8.8.8.8
-# 应输出: 丢包率、最小/平均/最大延迟
-
-keeper network port localhost 22
-# 应输出: 端口开放/关闭状态
-```
-
-### 2.5 安全扫描
-
-```bash
-keeper run 扫描漏洞
-keeper run 扫描 192.168.1.100 --full
-```
-
-**测试方法：**
-
-```bash
-# 需要系统安装 nmap
-sudo apt install nmap
-keeper run 扫描localhost
-# 应输出: 开放端口列表、风险检测
-```
-
-### 2.6 SSL/TLS 证书
-
-```bash
-keeper cert scan                              # 扫描本地证书
-keeper cert check-domain baidu.com            # 检查域名证书
-keeper cert check-domain baidu.com -p 8443    # 指定端口
-```
-
-**测试方法：**
-
-```bash
+keeper run 扫描漏洞 --host localhost
+keeper cert scan
 keeper cert check-domain baidu.com
-# 应输出: 证书状态（有效/即将过期/已过期）、剩余天数、颁发者
 ```
 
-### 2.7 定时任务
+**测试方法：** nmap 已安装时可正常扫描。未安装时 Agent 应提供安装引导。
+
+### 3.6 定时任务
 
 ```bash
 keeper schedule list
-keeper schedule add --cron "*/30 * * * *" --description "每30分钟检查K8s" --type k8s_inspect
-keeper schedule add --cron "0 9 * * *" --description "每天9点巡检" --type batch_inspect
+keeper schedule add --cron "*/30 * * * *" --description "K8s巡检" --type k8s_inspect
 keeper schedule remove <task_id>
 ```
 
-**测试方法：**
-
-```bash
-keeper schedule list
-keeper schedule add --cron "*/30 * * * *" --description "测试任务" --type inspect
-keeper schedule list
-keeper schedule remove <返回的task_id>
-```
-
-### 2.8 自动修复
-
-```bash
-keeper fix suggest          # 生成修复建议
-keeper fix verify           # 验证当前状态
-```
-
-**测试方法：**
+### 3.7 自动修复
 
 ```bash
 keeper fix suggest
-# 应输出: 基于规则的修复建议列表（或"未发现需要修复的问题"）
 keeper fix verify
-# 应输出: CPU、内存、磁盘、负载当前值
 ```
 
-### 2.9 报告导出
+### 3.8 通知推送
 
 ```bash
-keeper run 导出为 JSON
-keeper run 生成 HTML 报告
-keeper run 保存为 Markdown
+keeper notify config --feishu-webhook "https://open.feishu.cn/..."
+keeper notify test
+keeper notify status
 ```
 
-**测试方法：**
-
-```bash
-keeper run 导出为 JSON
-# 应输出: 报告文件路径
-```
-
-### 2.10 配置管理
+### 3.9 配置管理
 
 ```bash
 keeper init
 keeper config set --api-key sk-xxx --model claude-sonnet-4-6
 keeper config set --threshold 80 --metric cpu
-keeper config set --threshold 80            # 设置所有阈值
 keeper config set --profile production
 keeper config show
-keeper config clear                         # 清除所有配置（需确认）
 keeper status
 ```
 
-**测试方法：**
-
-```bash
-keeper status
-# 应输出: 配置文件路径、当前环境、LLM Provider、Model
-```
-
-### 2.11 审计日志
+### 3.10 审计日志
 
 ```bash
 keeper logs --hours 24
@@ -291,204 +272,160 @@ keeper logs --intent inspect
 keeper logs --json
 ```
 
-**测试方法：**
-
-```bash
-keeper run 检查本机
-keeper logs --hours 1
-# 应输出: 刚才的操作记录
-```
-
-### 2.12 飞书通知
-
-```bash
-keeper notify config --feishu-webhook "https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
-keeper notify test
-keeper notify status
-```
-
-**测试方法：**
-
-```bash
-keeper notify status
-# 应输出: 当前通知配置状态
-```
-
 ---
 
-## 三、Runbook 运维手册
+## 四、安全模块
 
-### 3.1 内置模板
+### 4.1 四级安全检查
 
-| 模板 | 文件 | 步骤 |
+| 级别 | 说明 | 示例 |
 |------|------|------|
-| 磁盘清理 | `disk_cleanup.yaml` | 6 步（检查→查找大文件→清理旧日志→清理缓存→验证） |
-| 日志轮转 | `log_rotate.yaml` | 3 步（检查→执行 logrotate→验证） |
-| 服务重启 | `service_restart.yaml` | 4 步（检查→重启→等待→验证） |
+| READ_ONLY | 只读，直接执行 | ps, df, ping, grep |
+| WRITE | 需确认 | systemctl restart, kill |
+| DESTRUCTIVE | 强制确认+警告 | docker prune, truncate |
+| DANGEROUS | 绝对拒绝 | rm -rf /, dd, mkfs |
 
 **测试方法：**
 
-```python
-from keeper.runbook.executor import RunbookExecutor, list_builtin_runbooks
+```bash
+keeper
+输入: 帮我执行 rm -rf /
+# 应被安全拦截，提示危险操作
 
-# 列出所有内置模板
-print(list_builtin_runbooks())
+输入: 执行 df -h
+# 应正常执行（安全命令）
+```
 
-# 加载并执行
-executor = RunbookExecutor()
-runbook = executor.load_from_yaml("keeper/runbook/templates/disk_cleanup.yaml")
-executor.execute(runbook, {"threshold": "85"})
+### 4.2 工具权限表
+
+14 个只读工具（auto_allow=True）+ 4 个写入工具（需确认）。
+
+---
+
+## 五、Runbook 运维手册
+
+### 5.1 内置模板
+
+| 模板 | 步骤 | 说明 |
+|------|------|------|
+| disk_cleanup.yaml | 6 步 | 检查→找大文件→清旧日志→清缓存→验证 |
+| service_restart.yaml | 4 步 | 检查→重启→等待→验证（含回滚） |
+| log_rotate.yaml | 3 步 | 检查→执行 logrotate→验证 |
+
+**测试方法：**
+
+```bash
+keeper
+输入: 磁盘空间不足，帮我清理
+# Agent 应调用 runbook_disk_cleanup 执行标准化流程
+
+输入: 重启 nginx 服务
+# Agent 应调用 runbook_service_restart 而非裸 systemctl restart
 ```
 
 ---
 
-## 四、Compliance 安全合规
+## 六、其他模块
 
-### 4.1 CIS Benchmark
+### 6.1 API 服务
+
+```bash
+python -m keeper.api.server &
+curl http://localhost:8000/health
+```
+
+### 6.2 Compliance 合规
 
 ```python
 from keeper.compliance.cis.linux_basic import CISLinuxBasic
-
-checker = CISLinuxBasic()
-results = checker.run_all()
-for r in results:
-    print(f"{r.status}: {r.title}")
+# CIS Benchmark 安全检查
 ```
 
-**测试方法：**
-
-```bash
-pytest tests/ -v -k test_phase2
-```
-
-### 4.2 Prometheus 集成
+### 6.3 Prometheus 集成
 
 ```python
 from keeper.integrations.prometheus import PrometheusClient
+```
 
-client = PrometheusClient("http://localhost:9090")
-# 查询指标
-result = client.query("node_cpu_seconds_total")
+### 6.4 通知推送
+
+支持飞书、钉钉、企业微信三通道。
+
+### 6.5 Knowledge 知识库
+
+`keeper/knowledge/fault_patterns.yaml` — 故障模式匹配。
+
+### 6.6 Snapshot 快照
+
+```python
+from keeper.tools.snapshot import SnapshotManager
+# 系统状态快照，支持前后对比
+```
+
+### 6.7 LogAnalyzer 日志分析
+
+```python
+from keeper.tools.log_analyzer import LogAnalyzer
+# 错误聚合 + 异常检测
+```
+
+### 6.8 Capacity + Comparator
+
+```python
+from keeper.tools.capacity import CapacityPredictor
+from keeper.tools.comparator import InspectionComparator
+# 容量预测 + 趋势对比
 ```
 
 ---
 
-## 五、API 服务
+## 七、部署模式
 
-```bash
-# 启动 API 服务
-python -m keeper.api.server
-
-# 健康检查
-curl http://localhost:8000/health
-
-# 服务状态
-curl http://localhost:8000/api/status -H "Authorization: Bearer <token>"
-
-# 列出工具
-curl http://localhost:8000/api/tools -H "Authorization: Bearer <token>"
-```
-
-**测试方法：**
-
-```bash
-# 启动服务（后台）
-python -m keeper.api.server &
-sleep 2
-curl http://localhost:8000/health
-# 应返回: {"status": "ok"}
-kill %1
-```
-
----
-
-## 六、通知推送（多通道）
-
-| 通道 | 文件 | 状态 |
+| 模式 | 命令 | 说明 |
 |------|------|------|
-| 飞书 | `keeper/tools/notify.py` | ✅ 已有 |
-| 钉钉 | `keeper/notify/dingtalk.py` | ✅ 新增 |
-| 企业微信 | `keeper/notify/wecom.py` | ✅ 新增 |
-| 路由器 | `keeper/notify/router.py` | ✅ 新增 |
-
-**测试方法：**
-
-```bash
-pytest tests/test_notify.py -v
-```
+| CLI | `curl ... \| bash && keeper` | 默认 |
+| Docker | `docker compose up -d` | API + CLI |
+| K8s | `kubectl apply -f deploy/` | 集群部署 |
+| 开发 | `pip install -e ".[dev]"` | 源码修改 |
 
 ---
 
-## 七、完整测试套件
-
-### 7.1 单元测试
+## 八、完整测试套件
 
 ```bash
 source venv/bin/activate
-pytest tests/ -v                          # 全部 304 个测试
-pytest tests/test_agent_loop.py -v        # Agent Loop 测试
-pytest tests/test_agent_safety.py -v      # 安全模块测试
-pytest tests/test_agent_tools.py -v       # 工具注册测试
-pytest tests/test_agent_e2e.py -v         # Agent E2E 测试
-pytest tests/test_nlu_fast_path.py -v     # NLU Fast Path 测试
-pytest tests/test_phase2.py -v            # Phase 2 功能测试
-pytest tests/test_validators.py -v        # 输入验证测试
-pytest tests/test_notify.py -v            # 通知推送测试
-pytest tests/test_fixer_cert.py -v        # 修复/证书测试
-pytest tests/test_keeper.py -v            # 核心模块测试
-pytest tests/test_logs.py -v              # 日志工具测试
-pytest tests/test_reporter.py -v          # 报告导出测试
-pytest tests/test_audit.py -v             # 审计日志测试
-```
 
-### 7.2 覆盖率
+# 全部测试
+pytest tests/ -v                          # 374 tests
 
-```bash
+# 分模块测试
+pytest tests/test_agent_loop.py -v        # Agent Loop
+pytest tests/test_agent_safety.py -v      # 安全检查
+pytest tests/test_agent_tools.py -v       # 工具注册
+pytest tests/test_agent_e2e.py -v         # Agent E2E
+pytest tests/test_integration.py -v       # 集成测试
+pytest tests/test_tools_extended.py -v    # 工具扩展
+pytest tests/test_nlu_fast_path.py -v     # NLU Fast Path
+pytest tests/test_phase2.py -v            # Phase 2
+pytest tests/test_validators.py -v        # 输入验证
+pytest tests/test_notify.py -v            # 通知
+pytest tests/test_fixer_cert.py -v        # 修复/证书
+pytest tests/test_keeper.py -v            # 核心
+pytest tests/test_logs.py -v              # 日志
+pytest tests/test_reporter.py -v          # 报告
+pytest tests/test_audit.py -v             # 审计
+
+# 覆盖率
 pytest tests/ --cov=keeper --cov-report=term-missing
 ```
 
-### 7.3 快速功能冒烟测试
+### 快速冒烟测试
 
 ```bash
-# 经典模式
+keeper status
 keeper run 检查本机
-keeper run 测试 8.8.8.8 的延迟
 keeper docker ls
 keeper network ping 8.8.8.8
 keeper cert check-domain baidu.com
-keeper status
 keeper logs --hours 1
-
-# Agent 模式
-keeper
-输入: 检查本机服务器状态
-输入: 测试网络连通性
-输入: /tools
-输入: /memory
-输入: /history
-输入: 退出
-```
-
----
-
-## 八、项目结构速查
-
-```
-keeper/
-├── agent/          ← Agent Loop 引擎（HybridAgent + ReAct Loop + 工具注册）
-├── api/            ← FastAPI REST 服务
-├── cli.py          ← Click CLI 入口
-├── compliance/     ← 安全合规（CIS Benchmark）
-├── config.py       ← 配置管理
-├── core/           ← 经典路由器（降级兜底）
-├── exceptions.py   ← 异常层次结构
-├── integrations/   ← Prometheus 集成
-├── knowledge/      ← 故障模式知识库
-├── nlu/            ← NLU 引擎（Fast Path + LLM）
-├── notify/         ← 多通道通知推送（飞书/钉钉/企微）
-├── runbook/        ← YAML 运维手册引擎
-├── storage/        ← 数据持久化（SQLite）
-├── tools/          ← 底层工具实现（20+ 个模块）
-├── utils/          ← 工具函数（日志/重试）
-└── validators.py   ← 输入验证
 ```
