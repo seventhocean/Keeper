@@ -48,10 +48,31 @@ def inspect_server(host: str = "localhost") -> str:
         格式化的服务器状态报告
     """
     from keeper.tools.server import ServerTools, format_status_report
+    from keeper.tools.alert import AlertEngine
     try:
         status = ServerTools.inspect_server(host)
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
-        return format_status_report(status, thresholds)
+        report = format_status_report(status, thresholds)
+
+        # 自动触发告警检查
+        try:
+            data = {
+                "cpu_percent": status.cpu_percent,
+                "memory_percent": status.memory_percent,
+                "disk_percent": status.disk_percent,
+                "load_avg": {"1m": status.load_avg_1m, "5m": status.load_avg_5m, "15m": status.load_avg_15m},
+                "failed_services": [],
+                "swap_percent": getattr(status, "swap_percent", 0),
+            }
+            alerts = AlertEngine.check_server(data, thresholds)
+            if alerts:
+                report += "\n\n⚠️ 告警：\n"
+                for a in alerts:
+                    report += f"  [{a.severity}] {a.name}: {a.message}\n"
+        except Exception:
+            pass  # 告警失败不影响巡检结果
+
+        return report
     except Exception as e:
         return f"[错误] 服务器巡检失败 ({host}): {str(e)}"
 
@@ -531,6 +552,88 @@ def execute_shell_command(command: str) -> str:
 
 
 # ═══════════════════════════════════════════════════════════════
+# Runbook 运维手册工具
+# ═══════════════════════════════════════════════════════════════
+
+@tool
+def runbook_disk_cleanup(threshold: int = 85, log_retention_days: int = 30) -> str:
+    """执行磁盘清理 Runbook — 检查磁盘使用率、查找大文件、清理旧日志和缓存。
+
+    当用户说"磁盘满了"、"清理磁盘空间"、"磁盘空间不足"时使用此工具。
+
+    Args:
+        threshold: 磁盘使用率阈值（百分比），默认 85
+        log_retention_days: 日志保留天数，默认 30
+
+    Returns:
+        执行结果和清理后的磁盘状态
+    """
+    from keeper.runbook.executor import RunbookExecutor
+    template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
+    executor = RunbookExecutor()
+    try:
+        runbook = executor.load_from_yaml(str(template_dir / "disk_cleanup.yaml"))
+        ok, summary = executor.execute(runbook, {"threshold": str(threshold), "log_retention_days": str(log_retention_days)})
+        return summary
+    except FileNotFoundError:
+        return "[错误] disk_cleanup runbook 模板未找到"
+    except Exception as e:
+        return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
+
+
+@tool
+def runbook_service_restart(service_name: str = "nginx", wait_seconds: int = 5) -> str:
+    """执行服务重启 Runbook — 检查服务状态、安全重启、等待、验证服务恢复。
+
+    当用户说"重启 nginx"、"重启 mysql"、"重启某个服务"时使用此工具。
+    比直接执行 systemctl restart 更安全，包含健康检查和回滚能力。
+
+    Args:
+        service_name: 要重启的服务名称（如 nginx, mysql, docker）
+        wait_seconds: 重启后等待验证的秒数，默认 5
+
+    Returns:
+        重启过程和验证结果
+    """
+    from keeper.runbook.executor import RunbookExecutor
+    template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
+    executor = RunbookExecutor()
+    try:
+        runbook = executor.load_from_yaml(str(template_dir / "service_restart.yaml"))
+        ok, summary = executor.execute(runbook, {"service_name": service_name, "wait_seconds": str(wait_seconds)})
+        return summary
+    except FileNotFoundError:
+        return "[错误] service_restart runbook 模板未找到"
+    except Exception as e:
+        return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
+
+
+@tool
+def runbook_log_rotate(log_path: str = "/var/log") -> str:
+    """执行日志轮转 Runbook — 检查日志目录大小、执行 logrotate、验证结果。
+
+    当用户说"日志太多了"、"轮转日志"、"清理日志"时使用此工具。
+
+    Args:
+        log_path: 日志目录路径，默认 /var/log
+
+    Returns:
+        轮转前后的日志目录状态
+    """
+    from keeper.runbook.executor import RunbookExecutor
+    template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
+    executor = RunbookExecutor()
+    try:
+        runbook = executor.load_from_yaml(str(template_dir / "log_rotate.yaml"))
+        ok, summary = executor.execute(runbook, {"log_path": log_path})
+        return summary
+    except FileNotFoundError:
+        return "[错误] log_rotate runbook 模板未找到"
+    except Exception as e:
+        return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
+
+
+# ═══════════════════════════════════════════════════════════════
 # 工具注册表 — Agent Loop 使用此列表
 # ═══════════════════════════════════════════════════════════════
 
@@ -560,6 +663,10 @@ ALL_TOOLS = [
     manage_systemd_service,
     # SSH 远程
     inspect_remote_server,
+    # Runbook
+    runbook_disk_cleanup,
+    runbook_service_restart,
+    runbook_log_rotate,
     # 通用
     execute_shell_command,
 ]

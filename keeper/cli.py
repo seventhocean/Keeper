@@ -616,23 +616,32 @@ def k8s():
     pass
 
 
+def _get_k8s_modules():
+    """安全导入 K8s 模块，未安装 SDK 时给出友好提示"""
+    try:
+        from .tools.k8s.client import K8sClient, K8sClusterConfig
+        from .tools.k8s.inspector import K8sInspector
+        from .tools.k8s.formatter import format_cluster_report
+        from .tools.k8s.logs import K8sLogTools
+        from .tools.k8s.ops import K8sOps
+        return K8sClient, K8sClusterConfig, K8sInspector, format_cluster_report, K8sLogTools, K8sOps
+    except ImportError:
+        click.echo(click.style(
+            "[K8s] kubernetes SDK 未安装。\n"
+            "  安装方法: pip install kubernetes\n"
+            "  或在 Agent 模式中直接对话，LLM 会通过 kubectl 命令行操作。", fg='yellow'))
+        sys.exit(1)
+
+
 @k8s.command("inspect")
 @click.option('--namespace', '-n', type=str, help='限定命名空间')
 @click.option('--kubeconfig', '-k', type=str, help='kubeconfig 文件路径')
 @click.option('--context', '-c', type=str, help='集群上下文名称')
 def k8s_inspect(namespace, kubeconfig, context):
-    """K8s 集群巡检
-
-    示例:
-        keeper k8s inspect
-        keeper k8s inspect -n kube-system
-    """
+    """K8s 集群巡检"""
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.inspector import K8sInspector
-    from .tools.k8s.formatter import format_cluster_report
+    K8sClient, K8sClusterConfig, K8sInspector, format_cluster_report, _, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -676,9 +685,7 @@ def k8s_logs(pod_name, namespace, lines, keyword, container, kubeconfig):
     """
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.logs import K8sLogTools
+    K8sClient, K8sClusterConfig, _, _, K8sLogTools, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -713,17 +720,10 @@ def k8s_logs(pod_name, namespace, lines, keyword, container, kubeconfig):
 @click.option('--namespace', '-n', type=str, help='限定命名空间')
 @click.option('--kubeconfig', type=str, help='kubeconfig 文件路径')
 def k8s_events(namespace, kubeconfig):
-    """查看集群 Warning 事件
-
-    示例:
-        keeper k8s events
-        keeper k8s events -n kube-system
-    """
+    """查看集群 Warning 事件"""
     config = AppConfig.from_env()
     config.load()
-
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.inspector import K8sInspector
+    K8sClient, K8sClusterConfig, K8sInspector, _, _, _ = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -778,8 +778,7 @@ def k8s_exec(pod_name, command, namespace, container, kubeconfig):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -824,8 +823,7 @@ def k8s_scale(deployment, replicas, namespace):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(
@@ -865,8 +863,7 @@ def k8s_restart(deployment, namespace):
     config = AppConfig.from_env()
     config.load()
 
-    from .tools.k8s.client import K8sClient, K8sClusterConfig
-    from .tools.k8s.ops import K8sOps
+    K8sClient, K8sClusterConfig, _, _, _, K8sOps = _get_k8s_modules()
 
     k8s_cfg_data = config.get_k8s_config()
     k8s_cfg = K8sClusterConfig(

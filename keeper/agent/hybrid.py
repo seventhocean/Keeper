@@ -126,12 +126,20 @@ class HybridAgent:
             # 记录审计
             tool_calls = self.agent_loop.get_last_tool_calls()
             audit_tool_names = [tc.tool_name for tc in tool_calls]
+            # 从工具调用中提取目标主机
+            audit_host = ""
+            for tc in tool_calls:
+                if tc.tool_name in ("inspect_server", "inspect_remote_server", "ping_host", "check_port", "scan_ports"):
+                    audit_host = tc.args.get("host", "") if tc.args else ""
+                    if audit_host:
+                        break
             self._log_audit(
                 "agent_loop",
                 "multi_step",
                 {"tools": audit_tool_names, "loops": self.agent_loop.last_turn.loop_count if self.agent_loop.last_turn else 0},
                 response,
                 start_time,
+                host=audit_host,
             )
 
             # 保存到长期记忆
@@ -254,7 +262,7 @@ class HybridAgent:
   /mode    — 查看当前运行模式
 """
 
-    def _log_audit(self, mode: str, intent: str, entities: dict, response: str, start_time: float):
+    def _log_audit(self, mode: str, intent: str, entities: dict, response: str, start_time: float, host: str = ""):
         """记录审计日志"""
         response_time = int((time.time() - start_time) * 1000)
         try:
@@ -264,6 +272,7 @@ class HybridAgent:
                 result="success" if not response.startswith("[错误]") and not response.startswith("[Agent 错误]") else "error",
                 response_time_ms=response_time,
                 response=response[:500],
+                host=host or None,
             )
         except Exception:
             pass  # 审计失败不影响主流程
