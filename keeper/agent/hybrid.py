@@ -25,20 +25,22 @@ from .memory import AgentMemory
 
 
 def _classify_input(user_input: str) -> str:
-    """根据输入关键词分类任务类型"""
+    """根据输入关键词分类任务类型（优先匹配具体类别，通用关键词最后检查）"""
     input_lower = user_input.lower()
-    if any(kw in input_lower for kw in ("k8s", "kubernetes", "pod", "集群", "deployment")):
+    # 具体类别优先
+    if any(kw in input_lower for kw in ("k8s", "kubernetes", "pod", "deployment")):
         return "k8s"
     if any(kw in input_lower for kw in ("网络", "ping", "端口", "dns", "延迟")):
         return "network"
-    if any(kw in input_lower for kw in ("cpu", "内存", "磁盘", "检查", "服务器", "负载")):
-        return "inspect"
     if any(kw in input_lower for kw in ("安全", "扫描", "漏洞", "证书", "ssl", "tls")):
         return "security"
     if any(kw in input_lower for kw in ("docker", "容器", "镜像")):
         return "docker"
     if any(kw in input_lower for kw in ("修复", "清理", "重启", "扩容", "缩容")):
         return "fix"
+    # 通用巡视关键词放最后
+    if any(kw in input_lower for kw in ("cpu", "内存", "磁盘", "检查", "服务器", "负载")):
+        return "inspect"
     return "general"
 
 
@@ -67,7 +69,7 @@ class HybridAgent:
     def agent_loop(self) -> AgentLoop:
         """延迟初始化 Agent Loop"""
         if self._agent_loop is None:
-            self._agent_loop = AgentLoop(self.config.llm, mode="auto", tool_mode="free")
+            self._agent_loop = AgentLoop(self.config.llm, mode="auto", tool_mode="all")
         return self._agent_loop
 
     def set_stream_callback(self, callback: Callable):

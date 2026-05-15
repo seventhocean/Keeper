@@ -106,7 +106,7 @@ class AgentLoop:
     MAX_OUTPUT_LEN = 2000   # 工具输出最大字符数（超出截断）
     MAX_HISTORY_TURNS = 5   # 保留的历史对话轮数
 
-    def __init__(self, llm_config, mode: str = "auto", tool_mode: str = "free"):
+    def __init__(self, llm_config, mode: str = "auto", tool_mode: str = "all"):
         """初始化 Agent Loop
 
         Args:

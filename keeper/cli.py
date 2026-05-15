@@ -199,7 +199,8 @@ def start_agent_chat():
 @click.option('--host', '-h', help='目标主机 IP 或主机名')
 @click.option('--profile', '-p', help='使用的环境配置')
 @click.option('--full', is_flag=True, help='执行完整扫描')
-def run(command, host, profile, full):
+@click.option('--classic', is_flag=True, help='使用经典路由器模式')
+def run(command, host, profile, full, classic):
     """执行单条命令
 
     示例:
@@ -217,15 +218,18 @@ def run(command, host, profile, full):
         click.echo("  使用：keeper config set --api-key YOUR_API_KEY")
         sys.exit(1)
 
-    # 创建 Agent
-    agent = create_agent(config)
-
     # 构建用户输入
     user_input = ' '.join(command)
-
-    # 添加命令行参数到上下文
     if host:
         user_input = f"{user_input} {host}"
+
+    if classic:
+        # 经典路由器模式
+        agent = create_agent(config)
+    else:
+        # Agent Loop 模式
+        from .agent.hybrid import HybridAgent
+        agent = HybridAgent(config)
 
     # 处理输入
     try:
