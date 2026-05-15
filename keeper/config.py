@@ -1,9 +1,69 @@
-"""配置管理模块"""
+"""配置管理模块
+
+增强：
+- 文件锁（fcntl.flock）防止并发读写冲突
+- 跨平台兼容（Windows 使用 msvcrt，Linux/Mac 使用 fcntl）
+"""
 import os
+import sys
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Generator
 from dataclasses import dataclass, field
 
+
+# ─── 跨平台文件锁 ─────────────────────────────────────────────
+
+@contextmanager
+def _file_lock(file_path: Path, exclusive: bool = True) -> Generator:
+    """跨平台文件锁上下文管理器
+
+    Args:
+        file_path: 要锁定的文件路径（使用 .lock 后缀的锁文件）
+        exclusive: True=排他锁（写）, False=共享锁（读）
+    """
+    lock_path = file_path.with_suffix(file_path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+
+    lock_fd = None
+    try:
+        lock_fd = open(lock_path, "w")
+
+        if sys.platform == "win32":
+            # Windows: msvcrt
+            import msvcrt
+            if exclusive:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            # Linux/Mac: fcntl
+            import fcntl
+            if exclusive:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_EX)
+            else:
+                fcntl.flock(lock_fd.fileno(), fcntl.LOCK_SH)
+
+        yield
+
+    finally:
+        if lock_fd is not None:
+            if sys.platform == "win32":
+                try:
+                    import msvcrt
+                    msvcrt.locking(lock_fd.fileno(), msvcrt.LK_UNLCK, 1)
+                except Exception:
+                    pass
+            else:
+                try:
+                    import fcntl
+                    fcntl.flock(lock_fd.fileno(), fcntl.LOCK_UN)
+                except Exception:
+                    pass
+            lock_fd.close()
+
+
+# ─── 配置数据类 ───────────────────────────────────────────────
 
 @dataclass
 class LLMConfig:
@@ -82,10 +142,13 @@ class AppConfig:
         return self._config_file
 
     def load(self) -> None:
-        """从配置文件加载"""
+        """从配置文件加载（带共享锁）"""
         import yaml
 
-        if self.config_file.exists():
+        if not self.config_file.exists():
+            return
+
+        with _file_lock(self.config_file, exclusive=False):
             with open(self.config_file) as f:
                 data = yaml.safe_load(f)
                 if data:
@@ -102,23 +165,24 @@ class AppConfig:
                         self.llm.model = llm_data.get("model", self.llm.model)
 
     def save(self) -> None:
-        """保存配置到文件"""
+        """保存配置到文件（带排他锁）"""
         import yaml
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
-        # 保存所有配置到一个文件
-        with open(self.config_file, "w") as f:
-            yaml.safe_dump({
-                "current_profile": self.current_profile,
-                "profiles": self.profiles,
-                "k8s": self.k8s,
-                "notifications": self.notifications,
-                "llm": self.llm.to_dict(),
-            }, f, default_flow_style=False, allow_unicode=True)
+        with _file_lock(self.config_file, exclusive=True):
+            with open(self.config_file, "w") as f:
+                yaml.safe_dump({
+                    "current_profile": self.current_profile,
+                    "profiles": self.profiles,
+                    "k8s": self.k8s,
+                    "notifications": self.notifications,
+                    "timeouts": self.timeouts,
+                    "llm": self.llm.to_dict(),
+                }, f, default_flow_style=False, allow_unicode=True)
 
     def save_llm_config(self, api_key: Optional[str] = None) -> None:
-        """保存 LLM 配置"""
+        """保存 LLM 配置（带排他锁）"""
         import yaml
 
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -126,15 +190,23 @@ class AppConfig:
         if api_key is not None:
             self.llm.api_key = api_key
 
-        # 保存配置
-        with open(self.config_file, "w") as f:
-            yaml.safe_dump({
+        with _file_lock(self.config_file, exclusive=True):
+            # 先读取现有配置再合并，避免覆盖其他进程的修改
+            existing = {}
+            if self.config_file.exists():
+                with open(self.config_file) as f:
+                    existing = yaml.safe_load(f) or {}
+
+            existing.update({
                 "current_profile": self.current_profile,
                 "profiles": self.profiles,
                 "k8s": self.k8s,
                 "notifications": self.notifications,
                 "llm": self.llm.to_dict(),
-            }, f, default_flow_style=False, allow_unicode=True)
+            })
+
+            with open(self.config_file, "w") as f:
+                yaml.safe_dump(existing, f, default_flow_style=False, allow_unicode=True)
 
     def is_llm_configured(self) -> bool:
         """检查 LLM 是否已配置"""
