@@ -585,6 +585,60 @@ def create_app() -> "FastAPI":
             ],
         }
 
+    # ─── 异步批量操作接口 ─────────────────────────────────
+
+    @app.post("/api/v1/batch/ping", dependencies=[Depends(verify_token)], tags=["批量操作"])
+    async def batch_ping(hosts: List[str], count: int = 4):
+        """并发 Ping 多台主机
+
+        异步并发 ping 所有指定主机，返回各主机的连通性结果。
+        """
+        from ..utils.async_utils import async_ping_hosts
+        results = await async_ping_hosts(hosts, count=count)
+        return {"success": True, "count": len(results), "results": results}
+
+    @app.post("/api/v1/batch/inspect", dependencies=[Depends(verify_token)], tags=["批量操作"])
+    async def batch_inspect(hosts: List[str]):
+        """异步批量服务器巡检
+
+        并发巡检多台服务器，比同步 ThreadPoolExecutor 更高效。
+        """
+        from ..utils.async_utils import async_batch_inspect
+        from ..tools.server import format_batch_report
+        statuses = await async_batch_inspect(hosts, max_concurrency=10)
+        thresholds = {"cpu": 80, "memory": 85, "disk": 90}
+        return {
+            "success": True,
+            "count": len(statuses),
+            "report": format_batch_report(statuses, thresholds),
+            "hosts": [
+                {
+                    "host": s.host,
+                    "cpu": s.cpu_percent,
+                    "memory": s.memory_percent,
+                    "disk": s.disk_percent,
+                    "load": s.load_avg_1m,
+                    "ssh_failed": s.ssh_failed,
+                }
+                for s in statuses
+            ],
+        }
+
+    @app.post("/api/v1/batch/ports", dependencies=[Depends(verify_token)], tags=["批量操作"])
+    async def batch_check_ports(targets: List[Dict[str, Any]]):
+        """并发端口检测
+
+        批量检测多个 host:port 的连通性。
+
+        **请求体格式：**
+        ```json
+        [{"host": "192.168.1.1", "port": 80}, {"host": "192.168.1.2", "port": 443}]
+        ```
+        """
+        from ..utils.async_utils import async_check_ports
+        results = await async_check_ports(targets)
+        return {"success": True, "count": len(results), "results": results}
+
     return app
 
 
