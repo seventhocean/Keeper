@@ -1,0 +1,108 @@
+patterns:
+  - name: memory_leak
+    symptoms:
+      - "内存使用率持续增长"
+      - "OOM Killed"
+      - "RSS 单调递增"
+    possible_causes:
+      - "应用未释放连接/缓存"
+      - "Go routine 泄漏"
+      - "Java 堆外内存泄漏"
+    fix_suggestions:
+      - "重启服务（临时缓解）"
+      - "分析 heap dump 定位泄漏点"
+      - "检查连接池配置"
+
+  - name: cpu_spike
+    symptoms:
+      - "CPU 使用率持续 >90%"
+      - "负载 > CPU 核心数 * 2"
+      - "单进程 CPU 占用 >80%"
+    possible_causes:
+      - "慢查询/死循环"
+      - "正则表达式回溯"
+      - "加密/压缩密集操作"
+      - "GC 频繁触发"
+    fix_suggestions:
+      - "kill 异常进程（临时）"
+      - "检查慢查询日志"
+      - "分析 CPU profile"
+      - "增加限流/缓存"
+
+  - name: disk_full
+    symptoms:
+      - "磁盘使用率 >90%"
+      - "No space left on device"
+      - "写入失败"
+    possible_causes:
+      - "日志未轮转（最常见）"
+      - "临时文件未清理"
+      - "数据库 binlog 堆积"
+      - "Docker overlay 膨胀"
+    fix_suggestions:
+      - "清理旧日志: find /var/log -name '*.gz' -mtime +30 -delete"
+      - "配置 logrotate"
+      - "清理 Docker: docker system prune"
+      - "检查大文件: du -sh /* | sort -rh | head"
+
+  - name: service_crash_loop
+    symptoms:
+      - "服务频繁重启"
+      - "CrashLoopBackOff (K8s)"
+      - "systemd 重启次数超限"
+    possible_causes:
+      - "配置错误导致启动失败"
+      - "依赖服务不可用（DB/Redis）"
+      - "OOM 被系统 kill"
+      - "端口已被占用"
+    fix_suggestions:
+      - "查看服务日志最后 50 行"
+      - "检查依赖服务连通性"
+      - "检查端口占用: ss -tlnp | grep <port>"
+      - "检查 memory limits 配置"
+
+  - name: network_unreachable
+    symptoms:
+      - "ping 超时"
+      - "Connection refused"
+      - "DNS 解析失败"
+    possible_causes:
+      - "防火墙规则变更"
+      - "网卡故障/链路中断"
+      - "DNS 配置错误"
+      - "路由表异常"
+    fix_suggestions:
+      - "检查 iptables 规则"
+      - "检查网卡状态: ip link show"
+      - "检查 DNS: cat /etc/resolv.conf"
+      - "检查路由: ip route show"
+
+  - name: database_slow
+    symptoms:
+      - "查询响应时间 >1s"
+      - "连接数接近上限"
+      - "大量慢查询日志"
+    possible_causes:
+      - "缺少索引"
+      - "锁等待/死锁"
+      - "连接池耗尽"
+      - "数据量激增"
+    fix_suggestions:
+      - "SHOW PROCESSLIST 查看活跃连接"
+      - "分析慢查询日志"
+      - "检查表索引: SHOW INDEX FROM <table>"
+      - "考虑读写分离"
+
+  - name: ssl_cert_expiring
+    symptoms:
+      - "证书即将过期 (<30天)"
+      - "浏览器安全警告"
+      - "HTTPS 连接失败"
+    possible_causes:
+      - "自动续期失败"
+      - "证书未部署到所有节点"
+      - "中间证书缺失"
+    fix_suggestions:
+      - "手动续期: certbot renew"
+      - "检查 nginx/apache 证书路径"
+      - "验证证书链完整性"
