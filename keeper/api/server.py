@@ -77,6 +77,19 @@ if FASTAPI_AVAILABLE:
         variables: Optional[Dict[str, str]] = Field(None, description="运行时变量覆盖")
         auto_confirm: bool = Field(False, description="是否自动确认破坏性步骤")
 
+    class BatchPingRequest(BaseModel):
+        """批量 Ping 请求"""
+        hosts: List[str] = Field(..., description="目标主机 IP 或域名列表", examples=[["8.8.8.8", "1.1.1.1"]])
+        count: int = Field(4, description="每台主机发送的 ICMP 包数量")
+
+    class BatchInspectRequest(BaseModel):
+        """批量巡检请求"""
+        hosts: List[str] = Field(..., description="目标主机列表", examples=[["localhost", "192.168.1.100"]])
+
+    class BatchPortRequest(BaseModel):
+        """批量端口检测请求"""
+        targets: List[Dict[str, Any]] = Field(..., description="目标列表", examples=[[{"host": "8.8.8.8", "port": 443}]])
+
     class RunbookResponse(BaseModel):
         """Runbook 执行响应"""
         success: bool
@@ -266,9 +279,7 @@ def create_app() -> "FastAPI":
                 if app.state.agent is None:
                     app.state.agent = HybridAgent(config)
                 response = app.state.agent.process(req.query)
-                tools = []
-                if app.state.agent._agent_loop and app.state.agent._agent_loop.last_turn:
-                    tools = [tc.tool_name for tc in app.state.agent._agent_loop.last_turn.tool_calls]
+                tools = app.state.agent.get_last_tool_names()
             except Exception as e:
                 response = f"[错误] {str(e)}"
                 tools = []
@@ -398,12 +409,24 @@ def create_app() -> "FastAPI":
                     # 发送完成消息
                     duration = int((time.time() - start) * 1000)
                     tools = []
-                    if app.state.agent._agent_loop and app.state.agent._agent_loop.last_turn:
-                        tools = [tc.tool_name for tc in app.state.agent._agent_loop.last_turn.tool_calls]
+                    # 优先从 stream 事件中提取工具名（更可靠）
+                    for evt in events_buffer:
+                        if isinstance(evt, dict) and evt.get("type") == "tool_call":
+                            tname = evt.get("tool", "")
+                            if tname and tname not in tools:
+                                tools.append(tname)
+                    # 回退到 last_turn
+                    if not tools:
+                        try:
+                            loop = app.state.agent.agent_loop
+                            if loop and loop.last_turn:
+                                tools = [tc.tool_name for tc in loop.last_turn.tool_calls]
+                        except Exception:
+                            pass
 
                     await websocket.send_json({
                         "type": "done",
-                        "response": response,
+                        "response": str(response),
                         "tools_used": tools,
                         "duration_ms": duration,
                     })
@@ -588,24 +611,24 @@ def create_app() -> "FastAPI":
     # ─── 异步批量操作接口 ─────────────────────────────────
 
     @app.post("/api/v1/batch/ping", dependencies=[Depends(verify_token)], tags=["批量操作"])
-    async def batch_ping(hosts: List[str], count: int = 4):
+    async def batch_ping(req: BatchPingRequest):
         """并发 Ping 多台主机
 
         异步并发 ping 所有指定主机，返回各主机的连通性结果。
         """
         from ..utils.async_utils import async_ping_hosts
-        results = await async_ping_hosts(hosts, count=count)
+        results = await async_ping_hosts(req.hosts, count=req.count)
         return {"success": True, "count": len(results), "results": results}
 
     @app.post("/api/v1/batch/inspect", dependencies=[Depends(verify_token)], tags=["批量操作"])
-    async def batch_inspect(hosts: List[str]):
+    async def batch_inspect(req: BatchInspectRequest):
         """异步批量服务器巡检
 
         并发巡检多台服务器，比同步 ThreadPoolExecutor 更高效。
         """
         from ..utils.async_utils import async_batch_inspect
         from ..tools.server import format_batch_report
-        statuses = await async_batch_inspect(hosts, max_concurrency=10)
+        statuses = await async_batch_inspect(req.hosts, max_concurrency=10)
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
         return {
             "success": True,
@@ -625,18 +648,18 @@ def create_app() -> "FastAPI":
         }
 
     @app.post("/api/v1/batch/ports", dependencies=[Depends(verify_token)], tags=["批量操作"])
-    async def batch_check_ports(targets: List[Dict[str, Any]]):
+    async def batch_check_ports(req: BatchPortRequest):
         """并发端口检测
 
         批量检测多个 host:port 的连通性。
 
         **请求体格式：**
         ```json
-        [{"host": "192.168.1.1", "port": 80}, {"host": "192.168.1.2", "port": 443}]
+        {"targets": [{"host": "192.168.1.1", "port": 80}, {"host": "192.168.1.2", "port": 443}]}
         ```
         """
         from ..utils.async_utils import async_check_ports
-        results = await async_check_ports(targets)
+        results = await async_check_ports(req.targets)
         return {"success": True, "count": len(results), "results": results}
 
     return app

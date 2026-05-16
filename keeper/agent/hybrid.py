@@ -77,6 +77,14 @@ class HybridAgent:
         """设置流式输出回调（显示工具调用过程）"""
         self._stream_callback = callback
 
+    def get_last_tool_names(self) -> list:
+        """获取上一轮执行中调用的工具名称列表"""
+        try:
+            loop = self.agent_loop
+            return loop.get_last_tool_names()
+        except Exception:
+            return []
+
     def process(self, user_input: str) -> str:
         """处理用户输入
 

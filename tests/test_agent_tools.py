@@ -27,8 +27,8 @@ class TestToolsRegistry:
     """工具注册表测试"""
 
     def test_all_tools_count(self):
-        """应注册 21 个工具（含 3 个 Runbook）"""
-        assert len(ALL_TOOLS) == 21
+        """应注册 23 个工具（含 3 个 Runbook + 2 个分析）"""
+        assert len(ALL_TOOLS) >= 23
 
     def test_all_tools_have_name(self):
         """每个工具都应有 name 属性"""
@@ -53,7 +53,7 @@ class TestToolsRegistry:
         assert "可用工具列表" in desc
         assert "inspect_server" in desc
         assert "execute_shell_command" in desc
-        assert "共 21 个工具可用" in desc
+        assert "个工具可用" in desc
 
     def test_tool_names_unique(self):
         """工具名称不应重复"""

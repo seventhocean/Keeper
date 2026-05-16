@@ -453,7 +453,6 @@ class AgentLoop:
                     response += f"  • {tc.tool_name}: {tc.result[:150]}\n"
 
         self._add_history(user_input, response)
-        _emit(callback, {"type": "done"})
         return response
 
     def _run_manual(
@@ -602,6 +601,10 @@ class AgentLoop:
         if self.last_turn:
             return self.last_turn.tool_calls
         return []
+
+    def get_last_tool_names(self) -> List[str]:
+        """获取上一轮调用的工具名称列表"""
+        return [tc.tool_name for tc in self.get_last_tool_calls()]
 
     def get_execution_summary(self) -> str:
         """获取上一轮执行摘要"""
