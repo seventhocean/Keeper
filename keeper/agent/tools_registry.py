@@ -831,6 +831,179 @@ except Exception:
     pass  # 插件加载失败不影响主流程
 
 
+# ─── 用户自定义 Runbook 动态注册 ───────────────────────────────────
+
+def list_user_runbooks() -> list:
+    """列出所有用户安装的 Runbook 名称"""
+    from keeper.runbook import get_user_runbooks_dir
+    runbooks_dir = get_user_runbooks_dir()
+    if not runbooks_dir.exists():
+        return []
+    return sorted(f.stem for f in runbooks_dir.glob("*.yaml"))
+
+
+def register_user_runbooks() -> list:
+    """扫描用户 Runbook 目录，动态注册为工具"""
+    from keeper.runbook import get_user_runbooks_dir
+    runbooks_dir = get_user_runbooks_dir()
+    if not runbooks_dir.exists():
+        return []
+
+    user_tools = []
+    for yaml_file in sorted(runbooks_dir.glob("*.yaml")):
+        try:
+            runbook_tool = _create_runbook_tool(yaml_file)
+            if runbook_tool:
+                user_tools.append(runbook_tool)
+        except Exception as e:
+            import logging
+            logging.getLogger("keeper.runbook").warning(
+                f"[Runbook] 加载失败: {yaml_file.name} — {e}"
+            )
+    return user_tools
+
+
+def _create_runbook_tool(yaml_file):
+    """为单个 Runbook YAML 动态创建一个 Tool
+
+    从 YAML 中提取 name/description/variables，生成可调用的函数。
+    """
+    import yaml
+    from pathlib import Path
+    from keeper.runbook.models import Runbook
+    from keeper.runbook.executor import RunbookExecutor
+
+    with open(yaml_file, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    runbook = Runbook.from_dict(data)
+    rb_name = runbook.name
+    rb_desc = data.get("description", "")
+    variables = data.get("variables", {})
+    steps_summary = " → ".join(
+        s.get("name", "") for s in data.get("steps", [])
+    )
+
+    # 构建 docstring
+    doc = f"执行 Runbook: {rb_desc}\n\n步骤: {steps_summary}\n\nArgs:\n"
+    for var_name, var_val in variables.items():
+        doc += f"    {var_name}: 默认值 {var_val}\n"
+    doc += "\nReturns:\n    执行结果摘要"
+
+    # 从变量生成函数参数（带默认值）
+    def _make_func(rb_path, rb_vars):
+        def runbook_func(**kwargs):
+            executor = RunbookExecutor()
+            runbook_data = executor.load_from_yaml(rb_path)
+            merged_vars = {**rb_vars, **kwargs}
+            ok, summary = executor.execute(runbook_data, merged_vars)
+            if ok:
+                return f"[Runbook] {rb_desc} 执行成功\n{summary}"
+            return f"[Runbook] {rb_desc} 执行失败\n{summary}"
+
+        runbook_func.__name__ = f"runbook_{rb_name}"
+        runbook_func.__doc__ = doc
+        return runbook_func
+
+    func = _make_func(str(yaml_file), variables)
+
+    if LANGCHAIN_AVAILABLE:
+        from langchain_core.tools import StructuredTool
+        from pydantic import BaseModel, create_model, Field
+
+        # 动态生成 args_schema（Pydantic model）
+        field_defs = {}
+        for var_name, var_val in variables.items():
+            field_defs[var_name] = (str, Field(default=str(var_val), description=f"Runbook 变量: {var_name}"))
+
+        RunbookArgsSchema = create_model(
+            f"{rb_name.title().replace('_', '')}Args",
+            **field_defs,
+        )
+
+        return StructuredTool(
+            name=f"runbook_{rb_name}",
+            description=doc,
+            func=func,
+            args_schema=RunbookArgsSchema,
+        )
+    return None
+
+
+@tool
+def install_runbook(name: str, description: str, yaml_content: str) -> str:
+    """安装一个新的 Runbook
+
+    用户提供 YAML 格式的 Runbook 内容，安装后可作为工具被 LLM 自主调度。
+
+    Args:
+        name: Runbook 名称（英文小写+下划线，如 db_inspection）
+        description: Runbook 简要描述
+        yaml_content: YAML 格式的 Runbook 完整内容
+
+    Returns:
+        安装结果信息
+    """
+    import yaml
+    from keeper.runbook import get_user_runbooks_dir
+    from keeper.runbook.models import Runbook
+
+    # 校验 YAML
+    try:
+        data = yaml.safe_load(yaml_content)
+    except yaml.YAMLError as e:
+        return f"[错误] YAML 格式无效: {e}"
+
+    # 校验必填字段
+    rb = Runbook.from_dict(data)
+    if not rb.name:
+        return "[错误] Runbook 缺少 name 字段"
+    if not rb.steps:
+        return "[错误] Runbook 至少需要包含一个步骤"
+
+    # 检查名称冲突
+    if name == rb.name:
+        pass  # 一致，使用 name
+    else:
+        name = rb.name  # 以 YAML 中的 name 为准
+
+    # 检查是否与内置 Runbook 重名
+    from keeper.runbook.executor import list_builtin_runbooks
+    builtin_names = list_builtin_runbooks()
+    if name in builtin_names:
+        return f"[错误] 名称 '{name}' 与内置 Runbook 冲突，请更换名称"
+
+    # 保存到用户目录
+    save_dir = get_user_runbooks_dir()
+    save_path = save_dir / f"{name}.yaml"
+
+    if save_path.exists():
+        return f"[提示] Runbook '{name}' 已存在，已更新内容"
+
+    save_dir.mkdir(parents=True, exist_ok=True)
+    with open(save_path, "w", encoding="utf-8") as f:
+        f.write(yaml_content)
+
+    # 重新注册（使新 Runbook 立即生效）
+    try:
+        new_tool = _create_runbook_tool(save_path)
+        if new_tool:
+            ALL_TOOLS.append(new_tool)
+    except Exception:
+        pass  # 下次启动时会自动加载
+
+    steps_count = len(rb.steps)
+    steps_desc = " → ".join(s.name for s in rb.steps)
+    return (
+        f"[Runbook] 安装成功: {name}\n"
+        f"  描述: {rb.description or description}\n"
+        f"  步骤: {steps_count} 步 ({steps_desc})\n"
+        f"  变量: {', '.join(f'{k}={v}' for k, v in rb.variables.items()) or '无'}\n"
+        f"  保存位置: {save_path}\n\n"
+        f"后续对话中可直接提及名称，我会自动调用此 Runbook。"
+    )
+
+
 def get_tools_description() -> str:
     """获取所有工具的描述（用于展示能力列表）"""
     lines = ["\n🔧 可用工具列表：", "=" * 40]
@@ -841,3 +1014,12 @@ def get_tools_description() -> str:
         lines.append(f"  • {name}: {first_line}")
     lines.append(f"\n共 {len(ALL_TOOLS)} 个工具可用")
     return "\n".join(lines)
+
+
+# ─── 加载用户自定义 Runbook 工具（放在函数定义之后）─────────────────
+try:
+    _user_runbook_tools = register_user_runbooks()
+    if _user_runbook_tools:
+        ALL_TOOLS.extend(_user_runbook_tools)
+except Exception:
+    pass  # Runbook 加载失败不影响主流程

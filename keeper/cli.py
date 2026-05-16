@@ -1266,6 +1266,156 @@ def cert_check_domain(domain, port):
 
 
 @cli.group()
+def runbook():
+    """Runbook 管理命令"""
+    pass
+
+
+@runbook.command("list")
+def runbook_list():
+    """列出所有 Runbook（内置 + 用户安装）"""
+    from .runbook.executor import list_builtin_runbooks
+    from .agent.tools_registry import list_user_runbooks
+
+    builtin = list_builtin_runbooks()
+    user = list_user_runbooks()
+
+    lines = ["[Runbook] 可用运维手册:"]
+    lines.append("━" * 50)
+    if builtin:
+        lines.append("  内置:")
+        for name in builtin:
+            lines.append(f"    • {name}")
+    if user:
+        lines.append("  用户安装:")
+        for name in user:
+            lines.append(f"    • {name}")
+    if not builtin and not user:
+        lines.append("  (无)")
+    lines.append("━" * 50)
+    lines.append(f"共 {len(builtin) + len(user)} 个 ({len(builtin)} 内置 + {len(user)} 用户)")
+    click.echo("\n".join(lines))
+
+
+@runbook.command("show")
+@click.argument('name')
+def runbook_show(name):
+    """查看 Runbook 详情"""
+    import yaml
+    from pathlib import Path
+    from .runbook.executor import list_builtin_runbooks
+    from .runbook import get_user_runbooks_dir
+
+    yaml_path = None
+    source = None
+
+    # 先查内置
+    if name in list_builtin_runbooks():
+        yaml_path = Path(__file__).parent / "runbook" / "templates" / f"{name}.yaml"
+        source = "builtin"
+    else:
+        # 再查用户
+        user_dir = get_user_runbooks_dir()
+        user_path = user_dir / f"{name}.yaml"
+        if user_path.exists():
+            yaml_path = user_path
+            source = "user"
+
+    if not yaml_path or not yaml_path.exists():
+        click.echo(click.style(f"[Runbook] '{name}' 未找到", fg='red'))
+        return
+
+    with open(yaml_path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    rb_name = data.get("name", name)
+    rb_desc = data.get("description", "")
+    variables = data.get("variables", {})
+    steps = data.get("steps", [])
+
+    lines = [f"[Runbook] {rb_name} ({source})"]
+    lines.append("━" * 50)
+    lines.append(f"  描述: {rb_desc}")
+    lines.append(f"  步骤: {len(steps)} 步")
+    lines.append("")
+    for i, s in enumerate(steps, 1):
+        lines.append(f"  {i}. {s.get('name', '')}")
+        if s.get('command'):
+            cmd = s['command'][:80] + "..." if len(s.get('command', '')) > 80 else s.get('command', '')
+            lines.append(f"     命令: {cmd}")
+    if variables:
+        lines.append("")
+        lines.append(f"  变量:")
+        for k, v in variables.items():
+            lines.append(f"    {k} = {v}")
+    lines.append("━" * 50)
+    click.echo("\n".join(lines))
+
+
+@runbook.command("add")
+@click.option('--file', '-f', 'runbook_file', type=click.Path(exists=True), help='YAML 文件路径')
+@click.option('--name', '-n', type=str, help='Runbook 名称')
+@click.option('--description', '-d', type=str, help='Runbook 描述')
+def runbook_add(runbook_file, name, description):
+    """安装新的 Runbook
+
+    示例:
+        keeper runbook add -f my_sop.yaml
+        keeper runbook add -f my_sop.yaml -n db_inspection -d "数据库巡检 SOP"
+    """
+    import yaml
+    from pathlib import Path
+    from .runbook import get_user_runbooks_dir
+
+    if not runbook_file:
+        click.echo(click.style("[错误] 请指定 YAML 文件路径: keeper runbook add -f <path>", fg='red'))
+        return
+
+    with open(runbook_file, "r", encoding="utf-8") as f:
+        yaml_content = f.read()
+
+    # 使用 install_runbook 工具（复用注册逻辑）
+    from .agent.tools_registry import install_runbook
+
+    # 从 YAML 解析名称和描述（如果未指定）
+    data = yaml.safe_load(yaml_content)
+    rb_name = name or data.get("name", Path(runbook_file).stem)
+    rb_desc = description or data.get("description", "")
+
+    result = install_runbook.invoke({
+        "name": rb_name,
+        "description": rb_desc,
+        "yaml_content": yaml_content,
+    })
+    click.echo(result)
+
+
+@runbook.command("remove")
+@click.argument('name')
+def runbook_remove(name):
+    """删除用户安装的 Runbook"""
+    from .runbook import get_user_runbooks_dir
+    from pathlib import Path
+
+    user_dir = get_user_runbooks_dir()
+    yaml_path = user_dir / f"{name}.yaml"
+
+    if not yaml_path.exists():
+        click.echo(click.style(f"[Runbook] '{name}' 未找到（不能删除内置 Runbook）", fg='red'))
+        return
+
+    yaml_path.unlink()
+    click.echo(click.style(f"✓ Runbook '{name}' 已删除", fg='green'))
+
+    # 从 ALL_TOOLS 中移除
+    try:
+        from .agent.tools_registry import ALL_TOOLS
+        ALL_TOOLS[:] = [t for t in ALL_TOOLS if (t.name if hasattr(t, 'name') else t.__name__) != f"runbook_{name}"]
+    except Exception:
+        pass
+
+
+@cli.group()
 def notify():
     """IM 通知推送管理"""
     pass

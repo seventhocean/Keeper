@@ -553,12 +553,50 @@ def create_app() -> "FastAPI":
 
     @app.get("/api/v1/runbooks", dependencies=[Depends(verify_token)], tags=["Runbook"])
     async def list_runbooks():
-        """列出可用 Runbook
+        """列出可用 Runbook（内置 + 用户安装）
 
-        返回所有内置的运维手册模板名称。
+        返回所有内置和用户的运维手册模板。
         """
         from ..runbook.executor import list_builtin_runbooks
-        return {"runbooks": list_builtin_runbooks()}
+        from ..agent.tools_registry import list_user_runbooks
+
+        builtin = list_builtin_runbooks()
+        user = list_user_runbooks()
+        return {
+            "runbooks": builtin + user,
+            "builtin": builtin,
+            "user": user,
+            "count": len(builtin) + len(user),
+        }
+
+    @app.get("/api/v1/runbook/{name}", dependencies=[Depends(verify_token)], tags=["Runbook"])
+    async def get_runbook(name: str):
+        """获取单个 Runbook 详情
+
+        支持内置和用户安装的 Runbook。
+        """
+        import yaml
+        from pathlib import Path
+        from ..runbook.executor import RunbookExecutor, list_builtin_runbooks
+        from ..runbook import get_user_runbooks_dir
+
+        # 先查内置
+        if name in list_builtin_runbooks():
+            template_dir = Path(__file__).parent.parent / "runbook" / "templates"
+            yaml_path = template_dir / f"{name}.yaml"
+            with open(yaml_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            return {"name": name, "source": "builtin", "runbook": data}
+
+        # 再查用户
+        user_dir = get_user_runbooks_dir()
+        user_path = user_dir / f"{name}.yaml"
+        if user_path.exists():
+            with open(user_path, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f)
+            return {"name": name, "source": "user", "runbook": data}
+
+        raise HTTPException(status_code=404, detail=f"Runbook '{name}' not found")
 
     # ─── 工具列表 ─────────────────────────────────────────
 

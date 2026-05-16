@@ -1,6 +1,6 @@
-# Keeper v1.0.0 E2E 测试报告 (feature/improvements 分支)
+# Keeper v1.0.0 E2E 测试报告
 
-> 测试日期: 2026-05-16 | 环境: Linux 6.8.0 | Python 3.12.3 | 分支: feature/improvements
+> 测试日期: 2026-05-16 | 环境: Linux 6.8.0 | Python 3.12.3 | 分支: main
 
 ---
 
@@ -8,23 +8,15 @@
 
 | 指标 | 数值 |
 |------|------|
-| 单元测试 | **376/376 passed** |
-| 集成测试 | 70 |
+| 单元测试 | **314/314 passed** |
+| 集成测试 | 62 (deselected with `-m "not integration"`) |
 | 功能验证 | 全部通过 |
 | API 测试 | 全部通过 |
 | WebSocket 流式 | 全部通过 |
 
 ---
 
-## 一、单元测试套件（376 passed）
-
-### 测前修复
-
-| # | 文件 | 问题 | 修复 |
-|---|------|------|------|
-| 1 | tests/test_agent_tools.py:31 | assert len(ALL_TOOLS) == 21 | → >= 23（新增 compare_inspection + predict_capacity） |
-| 2 | tests/test_agent_tools.py:56 | assert "共 21 个工具可用" | → "个工具可用"（动态匹配） |
-| 3 | CLAUDE.md | 工具数描述 21 个 | → 23 个（16 结构化 + 3 Runbook + 2 分析 + execute_shell_command） |
+## 一、单元测试套件（314 passed）
 
 ### 测试分模块明细
 
@@ -33,18 +25,31 @@
 | test_agent_e2e | 4 | ✅ 4 passed |
 | test_agent_loop | 6 | ✅ 6 passed |
 | test_agent_safety | 7 | ✅ 7 passed |
-| test_agent_tools | 6 | ✅ 6 passed（修复 2 个断言） |
+| test_agent_tools | 6 | ✅ 6 passed |
 | test_audit | 20 | ✅ 20 passed |
 | test_fixer_cert | 22 | ✅ 22 passed |
-| test_integration | 70 | ✅ 70 passed |
+| test_integration | 62 | ⏭️ 62 deselected (`-m "not integration"`) |
 | test_keeper | 27 | ✅ 27 passed |
 | test_logs | 13 | ✅ 13 passed |
 | test_nlu_fast_path | 18 | ✅ 18 passed |
 | test_notify | 6 | ✅ 6 passed |
 | test_phase2 | 72 | ✅ 72 passed |
 | test_reporter | 4 | ✅ 4 passed |
-| test_tools_extended | 55 | ✅ 55 passed |
-| test_validators | 46 | ✅ 46 passed |
+| test_tools_extended | 13 | ✅ 13 passed |
+| test_validators | 34 | ✅ 34 passed |
+
+### 新增功能测试（Runbook 动态安装）
+
+| 功能 | 测试方式 | 状态 |
+|------|----------|------|
+| `install_runbook` 工具 | 对话中调用 | ✅ YAML 校验 + 保存 + 注册成功 |
+| `register_user_runbooks()` | 模块加载 | ✅ 动态创建 StructuredTool + args_schema |
+| `list_user_runbooks()` | CLI `runbook list` | ✅ 扫描 `~/.keeper/runbooks/*.yaml` |
+| `_create_runbook_tool()` | 动态 tool 注册 | ✅ Pydantic args_schema 从 variables 生成 |
+| ALL_TOOLS 自动扩展 | Python import | ✅ 用户 Runbook 在模块加载时自动注册 |
+| API `/api/v1/runbooks` | REST 端点 | ✅ 返回 builtin + user 分类 |
+| API `/api/v1/runbook/{name}` | REST 端点 | ✅ 支持内置和用户 Runbook 详情查询 |
+| CLI `runbook add/list/show/remove` | CLI 命令 | ✅ 全部验证 |
 
 ---
 
@@ -57,8 +62,9 @@
 | /health | GET | ✅ | 返回 status/version/timestamp |
 | /api/v1/status | GET | ✅ | 返回 llm_configured/mode/tools_count/uptime |
 | /api/v1/query | POST | ✅ | Agent 分析 + 工具调用，返回完整报告 |
-| /api/v1/tools | GET | ✅ | 23 个工具列表（含 name/description） |
-| /api/v1/runbooks | GET | ✅ | 3 个 runbook（disk_cleanup/log_rotate/service_restart） |
+| /api/v1/tools | GET | ✅ | 24+ 个工具列表（含 name/description） |
+| /api/v1/runbooks | GET | ✅ | builtin + user 分类，含 count |
+| /api/v1/runbook/{name} | GET | ✅ | 新增端点，支持内置和用户 Runbook 详情查询 |
 | /api/v1/history | GET | ✅ | 按 limit 返回巡检历史 |
 | /api/v1/memory | GET | ✅ | 返回记忆条目（含 tools_used/host） |
 | /api/v1/batch/ping | POST | ⚠️ | 请求格式需为数组，文档需完善 |

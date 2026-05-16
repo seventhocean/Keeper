@@ -4,7 +4,7 @@
 
 用自然语言管理服务器：「检查 K8s 集群」「分析 CPU 为什么高」「磁盘满了帮我清理」。Keeper 通过 LLM 自主分析、选择工具、多步执行，像资深运维工程师一样工作。
 
-**版本：** v1.0.0 | 测试：374 passed | 工具：21 个
+**版本：** v1.0.0 | 测试：314 passed | 工具：24+ 个（支持动态扩展）
 
 ---
 
@@ -47,13 +47,6 @@ keeper config set --api-key YOUR_API_KEY --base-url https://api.qnaigc.com/v1
 keeper status    # 查看当前配置
 ```
 
-### Docker 部署
-
-```bash
-docker compose up -d             # 启动 Keeper + API 服务
-docker compose run keeper-cli    # 进入 CLI 模式
-```
-
 ---
 
 ## Agent 模式（默认）
@@ -76,7 +69,7 @@ Keeper 采用 **Hybrid Agent** 架构：Fast Path（正则匹配简单指令）+
 
 ### 核心能力
 
-Agent 拥有 21 个工具，LLM 自主选择调用：
+Agent 拥有 24+ 个工具（支持用户动态安装 Runbook），LLM 自主选择调用：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -87,6 +80,8 @@ Agent 拥有 21 个工具，LLM 自主选择调用：
 | Docker | docker_list_containers, docker_container_logs | 容器列表、日志 |
 | 安全 | scan_ports, check_ssl_cert | nmap 扫描、SSL 证书 |
 | 运维 | manage_systemd_service, execute_shell_command | 服务管理、安全 Shell |
+| SSH | inspect_remote_server | SSH 远程巡检 |
+| 分析 | compare_inspection, predict_capacity | 巡检对比、容量预测 |
 | Runbook | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate | 标准化运维流程 |
 | 自由 | run_bash, read_file, write_file, list_directory, search_files | 通用操作 |
 
@@ -160,6 +155,24 @@ keeper🤖> 磁盘满了帮我清理
 磁盘使用率: 62% → 45%  ✅
 ```
 
+### Runbook 动态安装（类似 Claude Code Skill）
+
+用户可以发送 YAML/Markdown 格式的 SOP 给 Keeper，Keeper 自动识别、保存、注册为可调用工具：
+
+```bash
+# CLI 安装
+keeper runbook add -f my_sop.yaml          # 从 YAML 文件安装
+keeper runbook list                         # 列出内置 + 用户 Runbook
+keeper runbook show db_inspection           # 查看 Runbook 详情
+keeper runbook remove db_inspection         # 删除用户 Runbook
+
+# Agent 对话中安装
+keeper🤖> 我有一个数据库巡检 SOP，帮我注册
+用户: [粘贴 YAML 或 Markdown 内容]
+→ Keeper 自动识别格式 → 保存 → 注册为 runbook_xxx 工具
+→ 后续对话中可直接提及名称，LLM 会自主调用
+```
+
 ---
 
 ## 命令参考
@@ -183,6 +196,7 @@ keeper🤖> 磁盘满了帮我清理
 | `/tools` | 列出所有可用工具 |
 | `/mode` | 查看当前运行模式 |
 | `/memory` | 查看历史操作记忆 |
+| `/plugins` | 查看已安装插件 |
 
 ### 服务器巡检
 
@@ -260,11 +274,20 @@ keeper🤖> 磁盘满了帮我清理
 | `keeper logs --hours 24` | 审计日志 |
 | `keeper logs --host 192.168.1.100` | 按主机筛选 |
 
+### Runbook 管理
+
+| 命令 | 说明 |
+|------|------|
+| `keeper runbook list` | 列出所有 Runbook（内置 + 用户） |
+| `keeper runbook add -f <file>` | 从 YAML 文件安装 |
+| `keeper runbook show <name>` | 查看 Runbook 详情 |
+| `keeper runbook remove <name>` | 删除用户 Runbook |
+
 ---
 
 ## 部署模式
 
-### 模式 1：CLI 工具（默认）
+### CLI 安装（默认）
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/seventhocean/Keeper/main/install.sh | bash
@@ -273,27 +296,7 @@ keeper
 
 适用：个人运维、开发调试、服务器日常管理。
 
-### 模式 2：Docker Compose
-
-```bash
-git clone https://github.com/seventhocean/Keeper.git
-cd Keeper
-docker compose up -d
-```
-
-服务：
-- `keeper-api` — REST API（端口 8000）
-- 支持 `docker compose run keeper-cli` 进入 CLI
-
-### 模式 3：Kubernetes
-
-```bash
-kubectl apply -f deploy/
-```
-
-支持 Prometheus 指标采集集成。
-
-### 模式 4：开发模式
+### 开发模式
 
 ```bash
 git clone https://github.com/seventhocean/Keeper.git
@@ -312,11 +315,12 @@ keeper/
 ├── agent/          ← Agent Loop 引擎（HybridAgent + ReAct + 流式）
 │   ├── loop.py              ← LangGraph / Manual 双模式
 │   ├── hybrid.py            ← Fast Path + Agent Loop + 降级
-│   ├── tools_registry.py    ← 21 个 @tool 注册
+│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + 动态 Runbook 注册
 │   ├── planner.py           ← 6 个排查模板
 │   ├── memory.py            ← 长期记忆（JSON 持久化）
 │   ├── safety.py            ← 四级安全检查
-│   └── free_tools.py        ← 5 个自由工具
+│   ├── free_tools.py        ← 5 个自由工具
+│   └── plugins.py           ← 用户自定义工具插件
 ├── api/            ← FastAPI REST 服务
 ├── cli.py          ← Click + Prompt Toolkit 入口
 ├── compliance/     ← CIS Benchmark 安全合规
@@ -325,10 +329,10 @@ keeper/
 ├── knowledge/      ← 故障模式知识库（YAML）
 ├── nlu/            ← NLU 引擎（Fast Path + LangChain LLM）
 ├── notify/         ← 多通道通知（飞书/钉钉/企业微信）
-├── runbook/        ← YAML 运维手册引擎（3 个内置模板）
+├── runbook/        ← YAML 运维手册引擎（3 内置 + 用户动态安装）
 ├── storage/        ← SQLite 巡检历史
 ├── tools/          ← 底层工具（20+ 模块）
-└── utils/          ← 日志/重试工具
+└── utils/          ← 日志/重试/异步/优雅停机
 ```
 
 ### 技术栈
@@ -347,7 +351,7 @@ keeper/
 | 合规 | CIS Benchmark |
 | 持久化 | SQLite + JSON |
 | 通知 | 飞书 / 钉钉 / 企业微信 |
-| 部署 | Docker / K8s / 一键安装脚本 |
+| 部署 | 一键安装脚本 |
 
 ---
 
@@ -355,7 +359,7 @@ keeper/
 
 ```bash
 # 测试
-pytest tests/ -v              # 374 tests
+pytest tests/ -v              # 314 tests (unit)
 pytest tests/ --cov=keeper     # 覆盖率报告
 
 # 代码检查

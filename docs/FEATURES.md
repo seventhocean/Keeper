@@ -1,6 +1,6 @@
 # Keeper 功能清单与测试方法
 
-> 版本: v1.0.0 | 更新: 2026-05-16 | 测试: 374 passed
+> 版本: v1.0.0 | 更新: 2026-05-16 | 测试: 314 passed
 
 ---
 
@@ -112,7 +112,7 @@ keeper
 
 ```bash
 keeper
-输入: /tools    # 应显示 21 个工具
+输入: /tools    # 应显示所有工具
 输入: /mode     # 应显示 Agent Loop (langgraph)
 输入: /memory   # 应先显示记忆（如有历史操作）
 输入: /clear    # 应清空对话
@@ -120,9 +120,9 @@ keeper
 
 ---
 
-## 二、21 个 Agent 工具
+## 二、Agent 工具（24+ 个，支持动态扩展）
 
-### 结构化工具（16 个）
+### 结构化工具（23 个）
 
 | # | 工具 | 说明 | 分类 |
 |---|------|------|------|
@@ -142,24 +142,25 @@ keeper
 | 14 | scan_ports | nmap 端口扫描 | 安全 |
 | 15 | check_ssl_cert | SSL 证书检查 | 安全 |
 | 16 | manage_systemd_service | 服务管理 | 运维 |
-
-### Runbook 工具（3 个）
-
-| # | 工具 | 说明 | 来源 |
-|---|------|------|------|
-| 17 | runbook_disk_cleanup | 6 步磁盘清理流程 | disk_cleanup.yaml |
-| 18 | runbook_service_restart | 4 步服务重启（含验证回滚） | service_restart.yaml |
-| 19 | runbook_log_rotate | 3 步日志轮转 | log_rotate.yaml |
+| 17 | inspect_remote_server | SSH 远程巡检 | SSH |
+| 18 | execute_shell_command | 安全 Shell 执行 | 通用 |
+| 19 | compare_inspection | 巡检对比分析 | 分析 |
+| 20 | predict_capacity | 容量预测 | 分析 |
+| 21-23 | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate | 标准化运维流程 | Runbook |
 
 ### 自由工具（5 个 — 仅 tool_mode=free/all 时可用）
 
 | # | 工具 | 说明 |
 |---|------|------|
-| 20 | run_bash | 任意 Bash |
-| 21 | read_file | 读文件 |
+| 24 | run_bash | 任意 Bash |
+| - | read_file | 读文件 |
 | - | write_file | 写文件 |
 | - | list_directory | 列目录 |
 | - | search_files | 搜索文件 |
+
+### 动态 Runbook 工具（用户安装，数量不限）
+
+用户可通过 `install_runbook` 工具或 `keeper runbook add` 安装自定义 SOP，自动注册为 `runbook_xxx` 工具，LLM 可像内置工具一样调用。
 
 **测试方法：**
 
@@ -298,7 +299,7 @@ keeper
 
 ### 4.2 工具权限表
 
-14 个只读工具（auto_allow=True）+ 4 个写入工具（需确认）。
+14+ 个只读工具（auto_allow=True）+ 4 个写入工具（需确认）+ 动态 Runbook 工具（默认 READ_ONLY）。
 
 ---
 
@@ -311,6 +312,27 @@ keeper
 | disk_cleanup.yaml | 6 步 | 检查→找大文件→清旧日志→清缓存→验证 |
 | service_restart.yaml | 4 步 | 检查→重启→等待→验证（含回滚） |
 | log_rotate.yaml | 3 步 | 检查→执行 logrotate→验证 |
+
+### 5.2 动态安装（新增）
+
+用户可将自定义 SOP（YAML 格式）安装为 Runbook 工具，类似 Claude Code 的 Skill 机制：
+
+**CLI 方式：**
+```bash
+keeper runbook add -f my_sop.yaml          # 从文件安装
+keeper runbook list                         # 查看内置 + 用户
+keeper runbook show db_inspection           # 查看详情
+keeper runbook remove db_inspection         # 删除
+```
+
+**Agent 对话方式：**
+```
+用户: 我有一个数据库巡检 SOP，帮我注册
+用户: [粘贴 YAML 内容]
+→ LLM 调用 install_runbook 工具
+→ 校验 YAML → 保存到 ~/.keeper/runbooks/ → 自动注册为 runbook_xxx 工具
+→ 后续对话中可直接提及名称调用
+```
 
 **测试方法：**
 
@@ -384,8 +406,6 @@ from keeper.tools.comparator import InspectionComparator
 | 模式 | 命令 | 说明 |
 |------|------|------|
 | CLI | `curl ... \| bash && keeper` | 默认 |
-| Docker | `docker compose up -d` | API + CLI |
-| K8s | `kubectl apply -f deploy/` | 集群部署 |
 | 开发 | `pip install -e ".[dev]"` | 源码修改 |
 
 ---

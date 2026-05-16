@@ -78,7 +78,7 @@ keeper logs --host 192.168.1.100
 - 有 `langchain_core`：使用 LangChain `@tool` 装饰器
 - 无 `langchain_core`：fallback 装饰器保持函数可调用
 
-`ALL_TOOLS` 列表包含 23 个工具：16 个结构化运维工具（服务器监控、日志查询、网络诊断、K8s 管理、Docker、安全扫描、SSL 证书、systemd 服务管理、SSH 远程）+ 3 个 Runbook 标准化流程（磁盘清理、服务重启、日志轮转）+ 2 个分析工具（`compare_inspection` 巡检对比、`predict_capacity` 容量预测）+ `execute_shell_command`。另有 5 个自由工具（`run_bash`, `read_file`, `write_file`, `list_directory`, `search_files`）在 `free_tools.py`，仅在 `tool_mode=free/all` 时暴露给 LLM。启动时自动加载 `~/.keeper/plugins/` 中的用户自定义工具。
+`ALL_TOOLS` 列表包含 24+ 个工具（支持动态扩展）：20 个结构化运维工具（服务器监控、日志查询、网络诊断、K8s 管理、Docker、安全扫描、SSL 证书、systemd 服务管理、SSH 远程）+ 3 个 Runbook 标准化流程（磁盘清理、服务重启、日志轮转）+ 2 个分析工具（`compare_inspection` 巡检对比、`predict_capacity` 容量预测）+ `execute_shell_command`。另有 5 个自由工具（`run_bash`, `read_file`, `write_file`, `list_directory`, `search_files`）在 `free_tools.py`，仅在 `tool_mode=free/all` 时暴露给 LLM。启动时自动加载 `~/.keeper/plugins/` 中的用户自定义工具 + `~/.keeper/runbooks/*.yaml` 中的用户 Runbook（动态注册为工具）。
 
 ### 模块结构
 
@@ -108,10 +108,11 @@ keeper/
 ├── i18n/                     ← 国际化支持
 │   ├── __init__.py           ← t() 翻译函数 + set_language()（KEEPER_LANG 环境变量）
 │   └── packs/                ← 语言包（zh.py / en.py）
-├── runbook/                  ← YAML 运维手册引擎
+├── runbook/                  ← YAML 运维手册引擎（3 内置 + 用户动态安装）
 │   ├── executor.py          ← 加载/渲染变量/执行步骤/安全检查
 │   ├── models.py            ← Runbook/RunbookStep 数据模型
-│   └── templates/           ← 3 个内置模板（disk_cleanup/service_restart/log_rotate）
+│   ├── templates/           ← 3 个内置模板（disk_cleanup/service_restart/log_rotate）
+│   └── __init__.py          ← 用户 Runbook 目录管理（~/.keeper/runbooks/）
 ├── notify/                   ← 多通道通知路由
 │   ├── router.py            ← NotifyRouter 按级别路由
 │   ├── dingtalk.py          ← 钉钉 webhook（HMAC-SHA256 签名）
@@ -203,6 +204,7 @@ keeper k8s scale <deploy> -r 5     # 扩缩容
 keeper docker ls|stats|images      # Docker 管理
 keeper network ping|port|dns|http  # 网络诊断
 keeper cert scan|check-domain      # SSL 证书
+keeper runbook list|add|show|remove   # Runbook 管理
 keeper schedule list|add|remove    # 定时任务
 keeper fix suggest|verify          # 自动修复
 keeper notify config|test|status   # 通知推送
@@ -252,5 +254,4 @@ notifications:
 - 漏洞扫描需要系统安装 `nmap`
 - `ServerTools.inspect_server("localhost")` 无需远程连接，可用于本地测试
 - K8s 客户端自动检测 kubeconfig（K3s/标准 K8s/in-cluster），无需手动配置
-- Docker Compose 开发环境：`docker compose up -d` 启动 API + Prometheus + Alertmanager
 - 详细功能测试说明见 `FEATURES.md`，测试报告见 `TEST_REPORT.md`
