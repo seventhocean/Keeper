@@ -1,6 +1,6 @@
 # Keeper 统一运维记忆 — 规划文档
 
-> 创建: 2026-05-16 | 版本: v1.0.0
+> 创建: 2026-05-16 | 更新: 2026-05-16 (v1.1.0)
 
 ---
 
@@ -28,35 +28,30 @@
 | `Comparator` (comparator.py) | 巡检历史对比 | ✅ 已实现，未自动触发 |
 | `CapacityPredictor` (capacity.py) | 容量预测 | ✅ 已实现，未自动触发 |
 
-## 当前状态
+## 当前状态（v1.1.0）
 
 - ✅ Agent 执行完自动保存记忆到磁盘
 - ✅ 新会话加载历史记忆
-- ❌ 新会话不向 LLM 注入「上次做了什么」
-- 🟡 关键词匹配后才注入上下文（被动），不主动告知
+- ✅ **首次对话注入记忆摘要**（v1.1.0 新增）
+- ✅ **后续对话通过 ContextInjector 被动注入相关记忆**（v1.1.0 新增）
+- ✅ **`/memory` 命令支持 `--host`/`--cat`/`--search`/`--date` 筛选**（v1.1.0 新增）
+- ✅ **TodoWrite 任务追踪**（v1.1.0 新增）
 - ❌ InspectionHistory 从不自动采集巡检数据
 
 ## 待实现
 
-### P0: 会话启动时注入记忆摘要
-
-- [ ] 在 `start_agent_chat` 或 `HybridAgent.process` 首次调用时，从 `AgentMemory` 读取最近 5 条记忆格式化为摘要文本
-- [ ] 摘要作为第一条系统/上下文消息发送给 LLM
-- [ ] 效果：用户打开 Keeper 就能看到「上次你在排查 xxx，结论是 yyy」
-
-### P1: 巡检数据自动采集
+### P0: 巡检数据自动采集
 
 - [ ] `inspect_server` 执行后自动写入 `InspectionHistory`（SQLite）
 - [ ] 配合 `Comparator` 实现「和三天前对比，CPU 涨了 20%」
 - [ ] 配合 `CapacityPredictor` 实现「按趋势，磁盘将在 7 天后满」
 
-### P2: 统一记忆查询
+### P1: Timeline 查询
 
 - [ ] 新增 `Timeline` 查询能力，按时间线查看所有事件
-- [ ] `/memory` 命令支持更多筛选维度（按日期/主机/类别）
 - [ ] Agent 对话中支持「上周三发生了什么」
 
-### P3: 主动告警
+### P2: 主动告警
 
 - [ ] 每次巡检后对比历史数据
 - [ ] 自动检测异常趋势（如 CPU 连续 3 天上升）
@@ -65,7 +60,7 @@
 ## 目标体验
 
 ```
-keeper🤖> 你好，Keeper v1.0.0
+keeper🤖> 你好，Keeper v1.1.0
 
   📋 上次工作回顾 (最近3次):
     • 5/16 排查 CPU 异常 → nginx worker_connections 不足，已修复

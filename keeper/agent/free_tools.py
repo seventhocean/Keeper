@@ -25,6 +25,9 @@ try:
 except ImportError:
     from .tools_registry import tool  # fallback
 
+from .tools_registry import register_tool_meta, ToolMeta
+from .safety import SafetyLevel
+
 
 # ═══════════════════════════════════════════════════════════════
 # 核心能力 1：执行任意 Bash 命令
@@ -91,6 +94,11 @@ def run_bash(command: str, timeout: int = 30) -> str:
     except Exception as e:
         return f"[错误] {type(e).__name__}: {str(e)}"
 
+register_tool_meta("run_bash", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False, timeout_sec=30,
+    tags=("general",),
+))
+
 
 # ═══════════════════════════════════════════════════════════════
 # 核心能力 2：读取任意文件
@@ -146,6 +154,11 @@ def read_file(path: str, start_line: int = 0, max_lines: int = 200) -> str:
     except Exception as e:
         return f"[错误] 读取失败: {type(e).__name__}: {str(e)}"
 
+register_tool_meta("read_file", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("general",),
+))
+
 
 # ═══════════════════════════════════════════════════════════════
 # 核心能力 3：写入文件
@@ -197,6 +210,11 @@ def write_file(path: str, content: str, mode: str = "overwrite") -> str:
         return f"[错误] 无权限写入: {path}"
     except Exception as e:
         return f"[错误] 写入失败: {type(e).__name__}: {str(e)}"
+
+register_tool_meta("write_file", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("general",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -254,6 +272,11 @@ def list_directory(path: str = "/", show_hidden: bool = False) -> str:
     except Exception as e:
         return f"[错误] {str(e)}"
 
+register_tool_meta("list_directory", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("general",),
+))
+
 
 # ═══════════════════════════════════════════════════════════════
 # 核心能力 5：搜索文件内容
@@ -299,6 +322,11 @@ def search_files(pattern: str, path: str = "/var/log", file_pattern: str = "*", 
         return "[错误] grep 命令不可用"
     except Exception as e:
         return f"[错误] 搜索失败: {str(e)}"
+
+register_tool_meta("search_files", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("general",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════

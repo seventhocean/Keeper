@@ -16,8 +16,11 @@ import time
 from typing import Optional, Dict, Any, List, Callable
 from dataclasses import dataclass, field
 
-from .tools_registry import ALL_TOOLS, LANGCHAIN_AVAILABLE
+from .tools_registry import ALL_TOOLS, LANGCHAIN_AVAILABLE, filter_tools_by_safety, get_tool_name
 from .free_tools import FREE_TOOLS
+from .safety import SafetyLevel
+from .context_injector import ContextInjector
+from .compressor import output_compressor
 
 
 # ─── 检测可用的 Agent 框架 ─────────────────────────────────────
@@ -180,7 +183,8 @@ class AgentLoop:
     MAX_OUTPUT_LEN = 2000   # 工具输出最大字符数（超出截断）
     MAX_HISTORY_TURNS = 5   # 保留的历史对话轮数
 
-    def __init__(self, llm_config, mode: str = "auto", tool_mode: str = "all"):
+    def __init__(self, llm_config, mode: str = "auto", tool_mode: str = "all",
+                 permission_mode: str = "allow", memory=None):
         """初始化 Agent Loop
 
         Args:
@@ -193,26 +197,39 @@ class AgentLoop:
                 - "free": 自由模式（run_bash + read_file + write_file，像 Claude Code）
                 - "routed": 路由模式（23 个预注册运维工具）
                 - "all": 全部工具（自由 + 路由）
+            permission_mode: 权限模式
+                - "allow": 允许所有工具（默认）
+                - "read_only": 仅只读工具
+            memory: AgentMemory 实例（用于上下文注入）
         """
         self.llm_config = llm_config
         self.requested_mode = mode
         self.tool_mode = tool_mode
+        self.permission_mode = permission_mode
         self.active_mode: Optional[str] = None
         self._agent = None
         self._llm = None
         self.conversation_history: List[Dict[str, str]] = []
         self.last_turn: Optional[AgentTurn] = None
+        self.context_injector = ContextInjector(memory=memory)
 
     def _get_tools(self):
-        """根据 tool_mode 获取工具列表"""
+        """根据 tool_mode 和 permission_mode 获取工具列表"""
         if self.tool_mode == "free":
-            return FREE_TOOLS
+            tools = FREE_TOOLS
         elif self.tool_mode == "routed":
-            return ALL_TOOLS
+            tools = ALL_TOOLS
         elif self.tool_mode == "all":
-            return FREE_TOOLS + ALL_TOOLS
+            tools = FREE_TOOLS + ALL_TOOLS
         else:
-            return FREE_TOOLS
+            tools = FREE_TOOLS
+
+        # 权限前置：按安全等级过滤
+        if self.permission_mode == "read_only":
+            tools = filter_tools_by_safety(tools, SafetyLevel.READ_ONLY)
+        # permission_mode == "allow" 不做过滤（默认行为）
+
+        return tools
 
     def _detect_mode(self) -> str:
         """自动检测可用模式"""
@@ -229,20 +246,31 @@ class AgentLoop:
 
     @property
     def llm(self):
-        """延迟初始化 LLM"""
+        """延迟初始化 LLM（根据 provider 选择 OpenAI 兼容或 Anthropic 原生 API）"""
         if self._llm is None:
             if not LANGCHAIN_AVAILABLE:
                 raise RuntimeError(
                     "langchain 未安装，无法使用 Agent Loop。\n"
                     "请运行: pip install langchain-core langchain-openai langgraph"
                 )
-            from langchain_openai import ChatOpenAI
-            self._llm = ChatOpenAI(
-                api_key=self.llm_config.api_key,
-                base_url=self.llm_config.base_url,
-                model=self.llm_config.model,
-                temperature=0,
-            )
+            provider = getattr(self.llm_config, "provider", "openai_compatible")
+            if provider == "anthropic":
+                from langchain_anthropic import ChatAnthropic
+                self._llm = ChatAnthropic(
+                    model=self.llm_config.model,
+                    api_key=self.llm_config.api_key,
+                    base_url=self.llm_config.base_url,
+                    temperature=0,
+                    max_tokens=2000,
+                )
+            else:
+                from langchain_openai import ChatOpenAI
+                self._llm = ChatOpenAI(
+                    api_key=self.llm_config.api_key,
+                    base_url=self.llm_config.base_url,
+                    model=self.llm_config.model,
+                    temperature=0,
+                )
         return self._llm
 
     @property
@@ -264,15 +292,28 @@ class AgentLoop:
     def _create_langgraph_agent(self):
         """方式 1：LangGraph ReAct Agent"""
         from langgraph.prebuilt import create_react_agent
+        prompt = self._build_system_prompt_with_context()
         return create_react_agent(
             model=self.llm,
             tools=self._get_tools(),
-            prompt=AGENT_SYSTEM_PROMPT,
+            prompt=prompt,
         )
 
     def _create_manual_agent(self):
         """方式 2：手动 ReAct（LLM + bind_tools）"""
         return self.llm.bind_tools(self._get_tools())
+
+    def _build_system_prompt_with_context(self, user_input: str = "") -> str:
+        """构建带上下文的系统提示
+
+        在 AGENT_SYSTEM_PROMPT 基础上追加环境上下文，
+        让 LLM 在开口前就了解主机状态和历史操作。
+        """
+        base = AGENT_SYSTEM_PROMPT
+        ctx = self.context_injector.collect(user_input)
+        if ctx.is_empty():
+            return base
+        return base + "\n\n" + ctx.format_for_system_prompt()
 
     def run(self, user_input: str, stream_callback: Optional[Callable] = None) -> str:
         """执行一轮 Agent Loop
@@ -545,9 +586,14 @@ class AgentLoop:
                             result = f"[错误] 未知工具: {tool_name}"
                         t_duration = int((time.time() - t_start) * 1000)
 
-                        # 截断过长输出
-                        if len(result) > self.MAX_OUTPUT_LEN:
-                            result = result[:self.MAX_OUTPUT_LEN] + "\n... (输出已截断)"
+                        # 智能压缩（替代硬截断）
+                        compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
+                        result = compressed.content
+                        if compressed.strategy != "none":
+                            _emit(callback, {
+                                "type": "warning",
+                                "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+                            })
 
                         _emit(callback, {
                             "type": "tool_result",
@@ -586,8 +632,8 @@ class AgentLoop:
 
     def _add_history(self, user_input: str, response: str):
         """添加到对话历史（带长度控制）"""
-        # 截断过长的回复（历史中只保留摘要）
-        summary = response[:500] if len(response) > 500 else response
+        # 使用智能压缩
+        summary = output_compressor.compress_for_history(response)
         self.conversation_history.append({
             "user": user_input,
             "assistant": summary,

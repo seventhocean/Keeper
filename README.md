@@ -4,7 +4,7 @@
 
 用自然语言管理服务器：「检查 K8s 集群」「分析 CPU 为什么高」「磁盘满了帮我清理」。Keeper 通过 LLM 自主分析、选择工具、多步执行，像资深运维工程师一样工作。
 
-**版本：** v1.0.0 | 测试：314 passed | 工具：24+ 个（支持动态扩展）
+**版本：** v1.1.0 | 测试：376 passed | 工具：25+ 个（支持动态扩展）
 
 ---
 
@@ -196,6 +196,7 @@ keeper🤖> 我有一个数据库巡检 SOP，帮我注册
 | `/tools` | 列出所有可用工具 |
 | `/mode` | 查看当前运行模式 |
 | `/memory` | 查看历史操作记忆 |
+| `/status` | 查看 Agent 运行状态 |
 | `/plugins` | 查看已安装插件 |
 
 ### 服务器巡检
@@ -313,14 +314,19 @@ keeper
 ```
 keeper/
 ├── agent/          ← Agent Loop 引擎（HybridAgent + ReAct + 流式）
-│   ├── loop.py              ← LangGraph / Manual 双模式
-│   ├── hybrid.py            ← Fast Path + Agent Loop + 降级
-│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + 动态 Runbook 注册
-│   ├── planner.py           ← 6 个排查模板
+│   ├── loop.py              ← LangGraph / Manual 双模式 + 上下文注入 + 输出压缩
+│   ├── hybrid.py            ← Fast Path + Agent Loop + 降级 + 状态总线 + 结构化提问
+│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册
+│   ├── planner.py           ← 6 个排查模板 + 动态计划生成
 │   ├── memory.py            ← 长期记忆（JSON 持久化）
 │   ├── safety.py            ← 四级安全检查
 │   ├── free_tools.py        ← 5 个自由工具
-│   └── plugins.py           ← 用户自定义工具插件
+│   ├── plugins.py           ← 用户自定义工具插件
+│   ├── context_injector.py  ← 上下文注入器（主机/任务/记忆）
+│   ├── commands.py          ← 命令系统（/clear /status /tools 等）
+│   ├── state.py             ← 状态总线 + TodoWrite 任务追踪
+│   ├── compressor.py        ← 工具输出压缩管线
+│   └── ask_user.py          ← 结构化提问解析器
 ├── api/            ← FastAPI REST 服务
 ├── cli.py          ← Click + Prompt Toolkit 入口
 ├── compliance/     ← CIS Benchmark 安全合规

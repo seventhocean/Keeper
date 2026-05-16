@@ -20,8 +20,10 @@ from keeper.core.context import AgentState
 from keeper.nlu.langchain_engine import _try_fast_match
 from keeper.nlu.base import IntentType
 from .loop import AgentLoop, LANGCHAIN_AVAILABLE
-from .planner import match_plan_template, should_show_plan
+from .planner import match_plan_template, should_show_plan, generate_dynamic_plan
 from .memory import AgentMemory
+from .state import AgentStateStore
+from .ask_user import ask_user_parser
 
 
 def _classify_input(user_input: str) -> str:
@@ -65,12 +67,16 @@ class HybridAgent:
         self._stream_callback: Optional[Callable] = None
         self.memory = AgentMemory()
         self._first_turn = True  # 首次对话标志，用于注入记忆摘要
+        self.state_store = AgentStateStore()
+        self.state_store.is_running = True
 
     @property
     def agent_loop(self) -> AgentLoop:
         """延迟初始化 Agent Loop"""
         if self._agent_loop is None:
-            self._agent_loop = AgentLoop(self.config.llm, mode="auto", tool_mode="all")
+            self._agent_loop = AgentLoop(
+                self.config.llm, mode="auto", tool_mode="all", memory=self.memory,
+            )
         return self._agent_loop
 
     def set_stream_callback(self, callback: Callable):
@@ -118,18 +124,24 @@ class HybridAgent:
             return self._handle_no_llm(user_input, fast_result)
 
         try:
-            # 注入排查计划（如果匹配到模板）
+            # 注入排查计划（模板优先，动态生成兜底）
             plan = match_plan_template(user_input)
+            if not plan and should_show_plan(user_input):
+                # 模板未匹配但输入暗示复杂任务 → 动态生成
+                plan = generate_dynamic_plan(user_input)
+
             augmented_input = user_input
-            if plan and should_show_plan(user_input):
+            if plan:
                 steps_desc = " → ".join(s.description for s in plan.steps)
                 augmented_input = f"{user_input}\n\n[排查路线: {steps_desc}]"
 
-            # 注入历史记忆上下文
-            # 首次对话：主动注入最近记忆摘要（无论是否匹配关键词）
+            # 上下文注入：由 ContextInjector 统一处理
+            # 首次对话：注入最近记忆摘要 + 主机上下文
             # 后续对话：仅在关键词匹配时注入相关记忆
             if self._first_turn:
                 self._first_turn = False
+                self.agent_loop.context_injector.collect(augmented_input)
+                # 首次对话仍用旧方式注入（因为 system prompt 在 LangGraph 中初始化后不可变）
                 recent = self.memory.get_recent(3)
                 if recent:
                     lines = ["[上次工作回顾]"]
@@ -140,11 +152,28 @@ class HybridAgent:
                     lines.append("")
                     augmented_input = "\n".join(lines) + f"[当前问题]\n{augmented_input}"
             else:
+                # 后续对话：通过 ContextInjector 获取相关记忆
+                self.agent_loop.context_injector.collect(augmented_input)
                 history_context = self.memory.get_context_for_prompt(user_input)
                 if history_context:
                     augmented_input = f"{history_context}\n[当前问题]\n{augmented_input}"
 
             response = self.agent_loop.run(augmented_input, stream_callback=self._stream_callback)
+
+            # 检测是否需要结构化提问
+            # 如果 Agent 的回复中包含工具返回的引导信息，格式化为结构化提问
+            last_tool_calls = self.agent_loop.get_last_tool_calls()
+            for tc in last_tool_calls:
+                parsed = ask_user_parser.parse(tc.tool_name, tc.result)
+                if parsed.needs_user_input:
+                    formatted = ask_user_parser.format_for_display(parsed)
+                    # 在回复末尾追加结构化提问
+                    response = response.rstrip() + "\n" + formatted
+                    break
+
+            # 同步状态到状态总线
+            self.state_store.active_loop_mode = self.agent_loop.active_mode
+            self.state_store.last_tool_calls = self.agent_loop.get_last_tool_calls()
 
             # 记录审计
             tool_calls = self.agent_loop.get_last_tool_calls()
@@ -178,136 +207,40 @@ class HybridAgent:
             return self._handle_agent_error(user_input, fast_result, e, start_time)
 
     def _handle_slash_command(self, cmd: str) -> str:
-        """处理斜杠命令"""
+        """处理斜杠命令 — 委托给命令系统"""
+        from .commands import (
+            CommandRegistry, create_default_registry,
+            handle_memory_command,
+        )
+
         cmd_raw = cmd.strip()
         cmd_lower = cmd_raw.lower()
 
-        # /memory 支持参数，不能完全 lowercase（主机名/关键词可能大小写敏感）
+        # /memory 需要解析参数，单独处理
         if cmd_lower == "/memory" or cmd_lower == "/记忆" or cmd_lower.startswith("/memory "):
-            return self._handle_memory_command(cmd_raw)
+            return handle_memory_command(cmd_raw, self.memory)
 
-        cmd = cmd_lower
+        # 其他命令：去掉 / 前缀后查找
+        cmd_no_slash = cmd_lower.lstrip("/")
+        if cmd_no_slash in ("clear", "清空", "reset"):
+            from .commands import _clear
+            return _clear(lambda: self._agent_loop)
+        if cmd_no_slash in ("history", "上次", "last"):
+            from .commands import _history
+            return _history(lambda: self._agent_loop)
+        if cmd_no_slash in ("tools", "能力"):
+            from .commands import _tools
+            return _tools()
+        if cmd_no_slash in ("mode", "状态"):
+            from .commands import _mode
+            return _mode(lambda: self._agent_loop)
+        if cmd_no_slash in ("plugins", "插件"):
+            from .commands import _plugins
+            return _plugins()
+        if cmd_no_slash in ("status", "系统状态"):
+            return self.state_store.format_status()
 
-        if cmd in ("/clear", "/reset"):
-            if self._agent_loop:
-                self._agent_loop.clear_history()
-            return "[系统] 对话历史已清空。"
-
-        if cmd in ("/history", "/last"):
-            if self._agent_loop:
-                return self._agent_loop.get_execution_summary()
-            return "(无执行记录)"
-
-        if cmd in ("/tools", "/能力"):
-            from .free_tools import get_free_tools_description
-            from .tools_registry import get_tools_description
-            return get_free_tools_description() + "\n" + get_tools_description()
-
-        if cmd in ("/mode", "/状态"):
-            mode = self._agent_loop.active_mode if self._agent_loop else "未初始化"
-            return f"[系统] 当前模式: Agent Loop ({mode})"
-
-        if cmd in ("/memory", "/记忆") or cmd.startswith("/memory "):
-            return self._handle_memory_command(cmd)
-
-        if cmd in ("/plugins", "/插件"):
-            from .plugins import format_plugins_info
-            return format_plugins_info()
-
-        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory /plugins"
-
-    def _handle_memory_command(self, cmd: str) -> str:
-        """处理 /memory 命令（支持筛选参数）
-
-        用法：
-          /memory              — 显示最近 5 条
-          /memory 10           — 显示最近 10 条
-          /memory --host xxx   — 按主机筛选
-          /memory --cat xxx    — 按类别筛选 (inspect/network/k8s/security/docker/fix)
-          /memory --search xxx — 按关键词搜索
-          /memory --date 2026-05-15 — 按日期筛选
-        """
-        parts = cmd.strip().split()
-        # 去掉 /memory 本身
-        args = parts[1:] if len(parts) > 1 else []
-
-        if not args:
-            return self.memory.format_recent(5)
-
-        # 解析参数
-        host_filter = None
-        cat_filter = None
-        search_kw = None
-        date_filter = None
-        count = 10
-
-        i = 0
-        while i < len(args):
-            arg = args[i]
-            if arg in ("--host", "-h") and i + 1 < len(args):
-                host_filter = args[i + 1]
-                i += 2
-            elif arg in ("--cat", "--category", "-c") and i + 1 < len(args):
-                cat_filter = args[i + 1]
-                i += 2
-            elif arg in ("--search", "--keyword", "-s", "-k") and i + 1 < len(args):
-                search_kw = args[i + 1]
-                i += 2
-            elif arg in ("--date", "-d") and i + 1 < len(args):
-                date_filter = args[i + 1]
-                i += 2
-            elif arg.isdigit():
-                count = int(arg)
-                i += 1
-            else:
-                # 当作搜索关键词
-                search_kw = arg
-                i += 1
-
-        # 执行筛选
-        if search_kw:
-            entries = self.memory.search(search_kw, limit=count)
-        elif host_filter:
-            entries = self.memory.get_host_history(host_filter, limit=count)
-        else:
-            entries = self.memory.get_recent(count)
-
-        # 二次过滤：按类别
-        if cat_filter:
-            entries = [e for e in entries if e.category == cat_filter]
-
-        # 二次过滤：按日期
-        if date_filter:
-            entries = [e for e in entries if e.timestamp.startswith(date_filter)]
-
-        if not entries:
-            hints = []
-            if host_filter:
-                hints.append(f"主机={host_filter}")
-            if cat_filter:
-                hints.append(f"类别={cat_filter}")
-            if search_kw:
-                hints.append(f"关键词={search_kw}")
-            if date_filter:
-                hints.append(f"日期={date_filter}")
-            filter_desc = ", ".join(hints) if hints else "无"
-            return f"[Agent 记忆] 未找到匹配记录 (筛选: {filter_desc})"
-
-        # 格式化输出
-        lines = [f"[Agent 记忆] 匹配 {len(entries)} 条记录:"]
-        lines.append("━" * 50)
-        for i_idx, entry in enumerate(entries, 1):
-            time_str = entry.timestamp[:16].replace("T", " ")
-            tools_str = ", ".join(entry.tools_used[:3])
-            cat_str = f" [{entry.category}]" if entry.category else ""
-            host_str = f" @{entry.host}" if entry.host else ""
-            lines.append(f"  {i_idx}. [{time_str}]{cat_str}{host_str} {entry.user_input[:50]}")
-            lines.append(f"     工具: {tools_str}")
-            lines.append(f"     结论: {entry.conclusion[:80]}")
-        lines.append("━" * 50)
-        lines.append(f"共 {self.memory.count} 条记忆 | 显示 {len(entries)} 条")
-        lines.append("筛选: /memory --host <ip> | --cat <类别> | --search <关键词> | --date <YYYY-MM-DD>")
-        return "\n".join(lines)
+        return f"[系统] 未知命令: {cmd}\n可用: /clear /history /tools /mode /memory /plugins /status"
 
     def _handle_fast_path(self, intent: IntentType, entities: dict) -> str:
         """处理 Fast Path 意图"""

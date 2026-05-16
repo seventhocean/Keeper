@@ -138,7 +138,7 @@ def match_plan_template(user_input: str) -> Optional[ExecutionPlan]:
     import copy
 
     keywords_map = {
-        "cpu_high": ["cpu 高", "cpu高", "cpu 使用率", "负载高", "load 高", "卡顿"],
+        "cpu_high": ["cpu 高", "cpu高", "cpu 使用率", "负载高", "load 高", "卡顿", "cpu高"],
         "service_down": ["不可达", "连不上", "无法访问", "502", "503", "504", "timeout", "超时"],
         "k8s_issue": ["k8s", "kubernetes", "pod", "集群异常", "pod 挂"],
         "security_audit": ["安全", "安全检查", "审计", "漏洞", "入侵"],
@@ -151,6 +151,13 @@ def match_plan_template(user_input: str) -> Optional[ExecutionPlan]:
         for kw in keywords:
             if kw in input_lower:
                 return copy.deepcopy(PLAN_TEMPLATES[template_key])
+
+    # 模糊匹配：处理 "cpu为什么高" 这种中间插入其他词的情况
+    import re
+    if re.search(r"cpu.*高", input_lower):
+        return copy.deepcopy(PLAN_TEMPLATES["cpu_high"])
+    if re.search(r"负载.*高", input_lower):
+        return copy.deepcopy(PLAN_TEMPLATES["cpu_high"])
 
     return None
 
@@ -180,3 +187,87 @@ def should_show_plan(user_input: str) -> bool:
             return True
 
     return False
+
+
+def generate_dynamic_plan(user_input: str) -> Optional[ExecutionPlan]:
+    """动态生成排查计划 — 当模板未匹配但用户输入暗示复杂任务时
+
+    基于关键词分析生成灵活的执行计划，
+    弥补 6 个预定义模板未覆盖的场景。
+
+    Returns:
+        动态生成的 ExecutionPlan，或 None（无需计划）
+    """
+    input_lower = user_input.lower()
+
+    # 检测是否需要计划
+    if not should_show_plan(user_input):
+        return None
+
+    # 已有模板匹配的场景不需要动态生成
+    if match_plan_template(user_input):
+        return None
+
+    # 根据关键词动态构建计划
+    steps = []
+    step_idx = 1
+    goal_parts = []
+
+    # 服务器资源相关
+    if any(kw in input_lower for kw in ("cpu", "内存", "磁盘", "负载", "资源", "慢", "卡")):
+        steps.append(PlanStep(step_idx, "检查服务器整体资源状态", "inspect_server"))
+        step_idx += 1
+        goal_parts.append("资源异常")
+
+    # 服务相关
+    if any(kw in input_lower for kw in ("nginx", "mysql", "redis", "docker", "服务", "进程")):
+        if not steps:
+            steps.append(PlanStep(step_idx, "检查服务器整体资源状态", "inspect_server"))
+            step_idx += 1
+        steps.append(PlanStep(step_idx, "查看相关进程/服务状态", "get_top_processes", "n=10"))
+        step_idx += 1
+        goal_parts.append("服务异常")
+
+    # 日志排查
+    if any(kw in input_lower for kw in ("日志", "error", "报错", "异常", "失败")):
+        steps.append(PlanStep(step_idx, "查询系统和应用日志", "query_system_logs", "priority=err"))
+        step_idx += 1
+        goal_parts.append("日志异常")
+
+    # 网络相关
+    if any(kw in input_lower for kw in ("网络", "连接", "超时", "不通", "延迟")):
+        steps.append(PlanStep(step_idx, "网络连通性检测", "ping_host"))
+        step_idx += 1
+        steps.append(PlanStep(step_idx, "端口连通性验证", "check_port"))
+        step_idx += 1
+        goal_parts.append("网络异常")
+
+    # 安全相关
+    if any(kw in input_lower for kw in ("安全", "入侵", "可疑", "未知")):
+        steps.append(PlanStep(step_idx, "端口扫描和安全检查", "scan_ports"))
+        step_idx += 1
+        steps.append(PlanStep(step_idx, "检查登录日志", "query_system_logs", "keyword=failed"))
+        step_idx += 1
+        goal_parts.append("安全排查")
+
+    # K8s 相关
+    if any(kw in input_lower for kw in ("k8s", "kubernetes", "pod", "deployment", "集群")):
+        steps.append(PlanStep(step_idx, "K8s 集群巡检", "k8s_cluster_inspect"))
+        step_idx += 1
+        goal_parts.append("K8s 异常")
+
+    # Docker 相关
+    if any(kw in input_lower for kw in ("docker", "容器", "镜像")):
+        steps.append(PlanStep(step_idx, "Docker 容器状态检查", "docker_list_containers"))
+        step_idx += 1
+        goal_parts.append("Docker 异常")
+
+    # 如果未能识别具体方向，使用通用排查路线
+    if not steps:
+        steps = [
+            PlanStep(step_idx, "检查服务器整体状态", "inspect_server"),
+        ]
+        goal_parts.append("通用排查")
+
+    goal = f"动态计划: {' + '.join(goal_parts)}"
+    return ExecutionPlan(goal=goal, steps=steps)

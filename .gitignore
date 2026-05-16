@@ -66,8 +66,7 @@ claude-session
 # Project specific
 .keeper/
 *.log
-study/
-
+docs/summaries
 # Keeper config (excluding API key)
 !/.keeper/config.yaml
 !/.keeper/llm_config.yaml

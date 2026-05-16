@@ -11,6 +11,84 @@
 """
 import subprocess
 from typing import Optional, Callable, Any
+from dataclasses import dataclass
+
+from .safety import SafetyLevel
+from .state import todo_write_tool
+
+
+# ─── 统一工具协议 ────────────────────────────────────────────────
+
+@dataclass
+class ToolMeta:
+    """工具元数据 — 描述工具的安全级别、只读属性、并发安全性等"""
+    safety_level: SafetyLevel = SafetyLevel.WRITE
+    is_read_only: bool = False
+    is_concurrency_safe: bool = False
+    timeout_sec: int = 30
+    tags: list = ()  # 用途标签：server / log / network / k8s / docker / security / runbook / general
+
+
+# 工具元数据注册表（按工具名索引）
+TOOL_REGISTRY: dict[str, ToolMeta] = {}
+
+
+def register_tool_meta(name: str, meta: ToolMeta):
+    """注册工具的元数据"""
+    TOOL_REGISTRY[name] = meta
+
+
+def get_tool_meta(name: str) -> Optional[ToolMeta]:
+    """获取工具的元数据"""
+    return TOOL_REGISTRY.get(name)
+
+
+def filter_tools_by_safety(tools: list, max_safety: SafetyLevel = SafetyLevel.READ_ONLY) -> list:
+    """按安全等级过滤工具 — 只返回 <= max_safety 的工具
+
+    安全等级排序: READ_ONLY < WRITE < DESTRUCTIVE < DANGEROUS
+    """
+    level_order = {
+        SafetyLevel.READ_ONLY: 0,
+        SafetyLevel.WRITE: 1,
+        SafetyLevel.DESTRUCTIVE: 2,
+        SafetyLevel.DANGEROUS: 3,
+    }
+    max_level = level_order.get(max_safety, 1)
+    result = []
+    for t in tools:
+        tname = getattr(t, 'name', getattr(t, '__name__', ''))
+        meta = get_tool_meta(tname)
+        if meta is None:
+            result.append(t)  # 未注册的工具默认放行
+            continue
+        if level_order.get(meta.safety_level, 1) <= max_level:
+            result.append(t)
+    return result
+
+
+def filter_tools_by_tags(tools: list, include_tags: list = None, exclude_tags: list = None) -> list:
+    """按标签过滤工具"""
+    result = []
+    for t in tools:
+        tname = getattr(t, 'name', getattr(t, '__name__', ''))
+        meta = get_tool_meta(tname)
+        if meta is None:
+            result.append(t)
+            continue
+        tags = set(meta.tags)
+        if include_tags and not tags.intersection(include_tags):
+            continue
+        if exclude_tags and tags.intersection(exclude_tags):
+            continue
+        result.append(t)
+    return result
+
+
+def get_tool_name(t) -> str:
+    """统一获取工具名称"""
+    return getattr(t, 'name', getattr(t, '__name__', ''))
+
 
 # ─── 兼容层：langchain_core 可选 ─────────────────────────────────
 try:
@@ -111,6 +189,11 @@ def inspect_server(host: str = "localhost") -> str:
     except Exception as e:
         return f"[错误] 服务器巡检失败 ({host}): {str(e)}"
 
+register_tool_meta("inspect_server", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("server",),
+))
+
 
 @tool
 def get_top_processes(n: int = 10) -> str:
@@ -136,6 +219,11 @@ def get_top_processes(n: int = 10) -> str:
         return "\n".join(lines)
     except Exception as e:
         return f"[错误] 获取进程信息失败: {str(e)}"
+
+register_tool_meta("get_top_processes", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("server",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -174,6 +262,11 @@ def query_system_logs(
     except Exception as e:
         return f"[错误] 日志查询异常: {str(e)}"
 
+register_tool_meta("query_system_logs", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("log",),
+))
+
 
 @tool
 def read_log_file(file_path: str, lines: int = 50, keyword: Optional[str] = None) -> str:
@@ -193,6 +286,11 @@ def read_log_file(file_path: str, lines: int = 50, keyword: Optional[str] = None
         return output if success else f"读取失败: {output}"
     except Exception as e:
         return f"[错误] 读取日志文件失败: {str(e)}"
+
+register_tool_meta("read_log_file", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("log",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -217,6 +315,11 @@ def ping_host(host: str, count: int = 4) -> str:
     except Exception as e:
         return f"[错误] Ping 失败: {str(e)}"
 
+register_tool_meta("ping_host", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("network",),
+))
+
 
 @tool
 def check_port(host: str, port: int) -> str:
@@ -236,6 +339,11 @@ def check_port(host: str, port: int) -> str:
     except Exception as e:
         return f"[错误] 端口检测失败: {str(e)}"
 
+register_tool_meta("check_port", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("network",),
+))
+
 
 @tool
 def dns_lookup(domain: str) -> str:
@@ -253,6 +361,11 @@ def dns_lookup(domain: str) -> str:
         return format_dns_result(result)
     except Exception as e:
         return f"[错误] DNS 查询失败: {str(e)}"
+
+register_tool_meta("dns_lookup", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("network",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -300,6 +413,11 @@ def k8s_cluster_inspect(namespace: Optional[str] = None) -> str:
     except Exception as e:
         return f"[错误] K8s 巡检失败: {str(e)}"
 
+register_tool_meta("k8s_cluster_inspect", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("k8s",),
+))
+
 
 @tool
 def k8s_pod_logs(
@@ -343,6 +461,11 @@ def k8s_pod_logs(
         return "[错误] kubernetes SDK 未安装"
     except Exception as e:
         return f"[错误] 获取 Pod 日志失败: {str(e)}"
+
+register_tool_meta("k8s_pod_logs", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("k8s",),
+))
 
 
 @tool
@@ -415,6 +538,16 @@ def k8s_restart_deployment(name: str, namespace: str = "default") -> str:
     except Exception as e:
         return f"[错误] 重启失败: {str(e)}"
 
+register_tool_meta("k8s_scale_deployment", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("k8s",),
+))
+
+register_tool_meta("k8s_restart_deployment", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("k8s",),
+))
+
 
 # ═══════════════════════════════════════════════════════════════
 # Docker 管理类工具
@@ -441,6 +574,11 @@ def docker_list_containers(all_containers: bool = True, filter_name: Optional[st
     except Exception as e:
         return f"[错误] Docker 查询失败: {str(e)}"
 
+register_tool_meta("docker_list_containers", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("docker",),
+))
+
 
 @tool
 def docker_container_logs(container_name: str, lines: int = 50) -> str:
@@ -466,6 +604,11 @@ def docker_container_logs(container_name: str, lines: int = 50) -> str:
         return "[错误] docker 命令未找到"
     except Exception as e:
         return f"[错误] 获取容器日志失败: {str(e)}"
+
+register_tool_meta("docker_container_logs", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("docker",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -498,6 +641,11 @@ def scan_ports(host: str) -> str:
     except Exception as e:
         return f"[错误] 端口扫描失败: {str(e)}"
 
+register_tool_meta("scan_ports", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("security",),
+))
+
 
 @tool
 def check_ssl_cert(target: str) -> str:
@@ -516,6 +664,11 @@ def check_ssl_cert(target: str) -> str:
         return format_cert_report(certs)
     except Exception as e:
         return f"[错误] 证书检查失败: {str(e)}"
+
+register_tool_meta("check_ssl_cert", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("security",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -550,6 +703,11 @@ def manage_systemd_service(service: str, action: str = "status") -> str:
         return "[错误] systemctl 命令不可用（非 systemd 系统）"
     except Exception as e:
         return f"[错误] 服务操作失败: {str(e)}"
+
+register_tool_meta("manage_systemd_service", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("server",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -586,6 +744,11 @@ def inspect_remote_server(host: str, username: str = "root") -> str:
         return format_status_report(status, thresholds)
     except Exception as e:
         return f"[错误] 远程巡检失败 ({host}): {str(e)}"
+
+register_tool_meta("inspect_remote_server", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("server",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -633,6 +796,11 @@ def execute_shell_command(command: str) -> str:
     except Exception as e:
         return f"[错误] 命令执行失败: {str(e)}"
 
+register_tool_meta("execute_shell_command", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False, timeout_sec=30,
+    tags=("general",),
+))
+
 
 # ═══════════════════════════════════════════════════════════════
 # Runbook 运维手册工具
@@ -663,6 +831,11 @@ def runbook_disk_cleanup(threshold: int = 85, log_retention_days: int = 30) -> s
     except Exception as e:
         return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
 
+register_tool_meta("runbook_disk_cleanup", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("runbook",),
+))
+
 
 @tool
 def runbook_service_restart(service_name: str = "nginx", wait_seconds: int = 5) -> str:
@@ -690,6 +863,11 @@ def runbook_service_restart(service_name: str = "nginx", wait_seconds: int = 5) 
     except Exception as e:
         return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
 
+register_tool_meta("runbook_service_restart", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("runbook",),
+))
+
 
 @tool
 def runbook_log_rotate(log_path: str = "/var/log") -> str:
@@ -714,6 +892,11 @@ def runbook_log_rotate(log_path: str = "/var/log") -> str:
         return "[错误] log_rotate runbook 模板未找到"
     except Exception as e:
         return f"[错误] Runbook 执行失败: {type(e).__name__}: {str(e)}"
+
+register_tool_meta("runbook_log_rotate", ToolMeta(
+    safety_level=SafetyLevel.WRITE, is_read_only=False, is_concurrency_safe=False,
+    tags=("runbook",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -754,6 +937,11 @@ def compare_inspection(host: str = "localhost") -> str:
     except Exception as e:
         return f"[错误] 巡检对比失败: {str(e)}"
 
+register_tool_meta("compare_inspection", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("server",),
+))
+
 
 @tool
 def predict_capacity(host: str = "localhost") -> str:
@@ -778,6 +966,11 @@ def predict_capacity(host: str = "localhost") -> str:
         return predictor.format_predictions(predictions)
     except Exception as e:
         return f"[错误] 容量预测失败: {str(e)}"
+
+register_tool_meta("predict_capacity", ToolMeta(
+    safety_level=SafetyLevel.READ_ONLY, is_read_only=True, is_concurrency_safe=True,
+    tags=("server",),
+))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -1008,10 +1201,17 @@ def get_tools_description() -> str:
     """获取所有工具的描述（用于展示能力列表）"""
     lines = ["\n🔧 可用工具列表：", "=" * 40]
     for t in ALL_TOOLS:
-        name = t.name if hasattr(t, 'name') else t.__name__
+        name = get_tool_name(t)
         doc = (t.description if hasattr(t, 'description') else t.__doc__) or ""
         first_line = doc.split("\n")[0]
-        lines.append(f"  • {name}: {first_line}")
+        meta = get_tool_meta(name)
+        suffix = ""
+        if meta:
+            if meta.is_read_only:
+                suffix = " [只读]"
+            elif meta.safety_level == SafetyLevel.WRITE:
+                suffix = " [写操作]"
+        lines.append(f"  • {name}: {first_line}{suffix}")
     lines.append(f"\n共 {len(ALL_TOOLS)} 个工具可用")
     return "\n".join(lines)
 
@@ -1023,3 +1223,12 @@ try:
         ALL_TOOLS.extend(_user_runbook_tools)
 except Exception:
     pass  # Runbook 加载失败不影响主流程
+
+
+# ─── TodoWrite 工具 ──────────────────────────────────────────────
+try:
+    _todo_tool = todo_write_tool()
+    if _todo_tool:
+        ALL_TOOLS.append(_todo_tool)
+except Exception:
+    pass  # TodoWrite 不可用时不影响主流程

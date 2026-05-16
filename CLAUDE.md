@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keeper** - 智能运维 Agent，类似 Claude Code 的对话式 CLI 工具
 
-**版本：** v1.0.0 (2026-05-16)
+**版本：** v1.1.0 (2026-05-16)
 
 ## 快速命令
 
@@ -70,7 +70,7 @@ keeper logs --host 192.168.1.100
 2. **手动 ReAct 循环**（兼容，仅需 `langchain`）：LLM bind_tools + 手动消息循环
 3. **不可用**：抛出明确错误提示安装 langchain/langgraph
 
-关键参数：`MAX_LOOPS=10`, `MAX_OUTPUT_LEN=2000`（工具输出截断）, `MAX_HISTORY_TURNS=5`
+关键参数：`MAX_LOOPS=10`, `MAX_OUTPUT_LEN=3000`（工具输出智能压缩）, `MAX_HISTORY_TURNS=5`
 
 ### 工具注册中心（`keeper/agent/tools_registry.py`）
 
@@ -78,21 +78,26 @@ keeper logs --host 192.168.1.100
 - 有 `langchain_core`：使用 LangChain `@tool` 装饰器
 - 无 `langchain_core`：fallback 装饰器保持函数可调用
 
-`ALL_TOOLS` 列表包含 24+ 个工具（支持动态扩展）：20 个结构化运维工具（服务器监控、日志查询、网络诊断、K8s 管理、Docker、安全扫描、SSL 证书、systemd 服务管理、SSH 远程）+ 3 个 Runbook 标准化流程（磁盘清理、服务重启、日志轮转）+ 2 个分析工具（`compare_inspection` 巡检对比、`predict_capacity` 容量预测）+ `execute_shell_command`。另有 5 个自由工具（`run_bash`, `read_file`, `write_file`, `list_directory`, `search_files`）在 `free_tools.py`，仅在 `tool_mode=free/all` 时暴露给 LLM。启动时自动加载 `~/.keeper/plugins/` 中的用户自定义工具 + `~/.keeper/runbooks/*.yaml` 中的用户 Runbook（动态注册为工具）。
+`ALL_TOOLS` 列表包含 25+ 个工具（支持动态扩展）：20 个结构化运维工具（服务器监控、日志查询、网络诊断、K8s 管理、Docker、安全扫描、SSL 证书、systemd 服务管理、SSH 远程）+ 3 个 Runbook 标准化流程（磁盘清理、服务重启、日志轮转）+ 2 个分析工具（`compare_inspection` 巡检对比、`predict_capacity` 容量预测）+ `execute_shell_command` + `todo_write`（任务追踪）。每个工具注册了 `ToolMeta`（安全等级/只读属性/领域标签），支持权限前置过滤和标签筛选。另有 5 个自由工具（`run_bash`, `read_file`, `write_file`, `list_directory`, `search_files`）在 `free_tools.py`，仅在 `tool_mode=free/all` 时暴露给 LLM。启动时自动加载 `~/.keeper/plugins/` 中的用户自定义工具 + `~/.keeper/runbooks/*.yaml` 中的用户 Runbook（动态注册为工具）。
 
 ### 模块结构
 
 ```
 keeper/
 ├── agent/                    ← Agent Loop 引擎
-│   ├── loop.py              ← ReAct Agent Loop（LangGraph / 手动两种模式）
-│   ├── hybrid.py            ← HybridAgent — Fast Path + Agent Loop 混合入口
-│   ├── planner.py           ← 执行计划生成器 + 6 个预定义排查模板
-│   ├── memory.py            ← AgentMemory 长期记忆（持久化到 ~/.keeper/agent_memory.json）
-│   ├── safety.py            ← CommandSafetyChecker 四级安全审查 + TOOL_PERMISSIONS 表
-│   ├── tools_registry.py    ← 21 个 @tool 注册 + ALL_TOOLS + get_tools_description()
-│   ├── free_tools.py        ← 5 个自由工具（run_bash/read_file/write_file/list_directory/search_files）
-│   └── plugins.py           ← 用户自定义工具插件系统（~/.keeper/plugins/ 自动发现）
+│   ├── loop.py              ← ReAct Agent Loop（LangGraph / 手动两种模式 + 上下文注入 + 输出压缩）
+│   ├── hybrid.py            ← HybridAgent — Fast Path + Agent Loop + 降级 + 状态总线 + 结构化提问
+│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册
+│   ├── planner.py           ← 6 个排查模板 + 动态计划生成
+│   ├── memory.py            ← 长期记忆（JSON 持久化）
+│   ├── safety.py            ← 四级安全检查
+│   ├── free_tools.py        ← 5 个自由工具
+│   ├── plugins.py           ← 用户自定义工具插件
+│   ├── context_injector.py  ← 上下文注入器（主机/任务/记忆）
+│   ├── commands.py          ← 命令系统（/clear /status /tools 等）
+│   ├── state.py             ← 状态总线 + TodoWrite 任务追踪
+│   ├── compressor.py        ← 工具输出压缩管线
+│   └── ask_user.py          ← 结构化提问解析器
 ├── api/
 │   └── server.py            ← FastAPI REST 服务（/health, /api/v1/query, /api/v1/tools 等端点）
 ├── core/
@@ -192,7 +197,7 @@ keeper agent        # 显式启动 Agent 模式
 keeper chat         # 显式启动经典模式
 ```
 
-特殊命令（交互模式内）：`/clear`, `/history`, `/tools`, `/mode`, `/memory`
+特殊命令（交互模式内）：`/clear`, `/history`, `/tools`, `/mode`, `/memory`, `/status`
 
 其他 CLI 子命令：
 
@@ -254,4 +259,3 @@ notifications:
 - 漏洞扫描需要系统安装 `nmap`
 - `ServerTools.inspect_server("localhost")` 无需远程连接，可用于本地测试
 - K8s 客户端自动检测 kubeconfig（K3s/标准 K8s/in-cluster），无需手动配置
-- 详细功能测试说明见 `FEATURES.md`，测试报告见 `TEST_REPORT.md`
