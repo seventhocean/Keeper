@@ -330,9 +330,8 @@ class AgentLoop:
 
         try:
             # Check if context has changed (TTL expired) and invalidate agent
-            if self._agent is not None and self.context_injector._last_context is not None:
-                if (time.time() - self.context_injector._last_collect_time) >= self.context_injector._cache_ttl:
-                    self._agent = None  # Force re-creation with updated context
+            if self._agent is not None and self.context_injector.is_stale():
+                self._agent = None  # Force re-creation with updated context
 
             # 初始化 agent（触发模式检测）
             _ = self.agent
@@ -581,6 +580,12 @@ class AgentLoop:
                             })
                             result = f"[安全限制] 工具 {tool_name} 需要用户确认才能执行 (安全等级: {level.value})，请向用户询问是否允许执行。"
                             t_duration = 0
+                            _emit(callback, {
+                                "type": "tool_result",
+                                "tool": tool_name,
+                                "duration_ms": 0,
+                                "success": False,
+                            })
                         else:
                             # 执行工具
                             t_start = time.time()

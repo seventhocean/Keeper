@@ -215,6 +215,13 @@ class ContextInjector:
 
         return "\n".join(lines)
 
+    def is_stale(self) -> bool:
+        """Check if cached context has expired"""
+        if self._last_context is None:
+            return False
+        import time as _time
+        return (_time.time() - self._last_collect_time) >= self._cache_ttl
+
     def refresh(self):
         """强制刷新缓存，下次 collect() 重新收集"""
         self._last_context = None
