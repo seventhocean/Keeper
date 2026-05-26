@@ -114,19 +114,22 @@ class ServerTools:
 
         # 如果是本地，直接采集
         if host in (None, "localhost", "127.0.0.1", cls.get_hostname()):
+            mem_info = cls.get_memory_info()
+            disk_info = cls.get_disk_info()
+            load_avg = cls.get_load_avg()
             return ServerStatus(
                 host=target_host,
                 timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
                 cpu_percent=cls.get_cpu_percent(),
-                memory_percent=cls.get_memory_info()["percent"],
-                memory_used_gb=cls.get_memory_info()["used_gb"],
-                memory_total_gb=cls.get_memory_info()["total_gb"],
-                disk_percent=cls.get_disk_info()["percent"],
-                disk_used_gb=cls.get_disk_info()["used_gb"],
-                disk_total_gb=cls.get_disk_info()["total_gb"],
-                load_avg_1m=cls.get_load_avg()["1m"],
-                load_avg_5m=cls.get_load_avg()["5m"],
-                load_avg_15m=cls.get_load_avg()["15m"],
+                memory_percent=mem_info["percent"],
+                memory_used_gb=mem_info["used_gb"],
+                memory_total_gb=mem_info["total_gb"],
+                disk_percent=disk_info["percent"],
+                disk_used_gb=disk_info["used_gb"],
+                disk_total_gb=disk_info["total_gb"],
+                load_avg_1m=load_avg["1m"],
+                load_avg_5m=load_avg["5m"],
+                load_avg_15m=load_avg["15m"],
                 boot_time=cls.get_boot_time(),
                 top_processes=cls.get_top_processes(5),
             )

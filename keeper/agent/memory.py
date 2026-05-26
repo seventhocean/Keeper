@@ -12,6 +12,8 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 
+from keeper.config import _file_lock
+
 
 @dataclass
 class AgentMemoryEntry:
@@ -44,11 +46,12 @@ class AgentMemory:
         """从文件加载记忆"""
         if self.memory_file.exists():
             try:
-                with open(self.memory_file, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    self._entries = [
-                        AgentMemoryEntry(**entry) for entry in data.get("entries", [])
-                    ]
+                with _file_lock(self.memory_file, exclusive=False):
+                    with open(self.memory_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        self._entries = [
+                            AgentMemoryEntry(**entry) for entry in data.get("entries", [])
+                        ]
             except (json.JSONDecodeError, TypeError, KeyError):
                 self._entries = []
 
@@ -60,8 +63,9 @@ class AgentMemory:
             "updated_at": datetime.now().isoformat(),
             "entries": [asdict(e) for e in self._entries[-self.MAX_ENTRIES:]],
         }
-        with open(self.memory_file, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        with _file_lock(self.memory_file, exclusive=True):
+            with open(self.memory_file, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
 
     def add(
         self,

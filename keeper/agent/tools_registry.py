@@ -726,11 +726,11 @@ def inspect_remote_server(host: str, username: str = "root") -> str:
         远程服务器状态报告
     """
     from keeper.tools.ssh import SSHTools, SSHConfig
-    from keeper.tools.server import format_status_report
+    from keeper.tools.server import format_status_report, ServerStatus
     try:
         config = SSHConfig(host=host, username=username)
-        status = SSHTools.collect_server_status(config)
-        if status.ssh_failed:
+        success, status_dict = SSHTools.collect_server_status(config)
+        if not success:
             return (
                 f"SSH 连接 {host} 失败（用户: {username}）。\n\n"
                 f"请向用户询问以下信息后重试：\n"
@@ -740,6 +740,23 @@ def inspect_remote_server(host: str, username: str = "root") -> str:
                 f"  4. SSH 端口（非标准端口 22？）\n\n"
                 f"用户提供凭据后，你可以用 execute_shell_command 通过 ssh 命令行重试。"
             )
+        # Build ServerStatus from dict for format_status_report
+        status = ServerStatus(
+            host=status_dict.get("host", host),
+            timestamp=status_dict.get("timestamp", ""),
+            cpu_percent=status_dict.get("cpu_percent", 0),
+            memory_percent=status_dict.get("memory_percent", 0),
+            memory_used_gb=status_dict.get("memory_used_gb", 0),
+            memory_total_gb=status_dict.get("memory_total_gb", 0),
+            disk_percent=status_dict.get("disk_percent", 0),
+            disk_used_gb=status_dict.get("disk_used_gb", 0),
+            disk_total_gb=status_dict.get("disk_total_gb", 0),
+            load_avg_1m=status_dict.get("load_avg_1m", 0),
+            load_avg_5m=status_dict.get("load_avg_5m", 0),
+            load_avg_15m=status_dict.get("load_avg_15m", 0),
+            boot_time=status_dict.get("boot_time", ""),
+            top_processes=status_dict.get("top_processes", []),
+        )
         thresholds = {"cpu": 80, "memory": 85, "disk": 90}
         return format_status_report(status, thresholds)
     except Exception as e:

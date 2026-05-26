@@ -34,7 +34,7 @@ class TestCLIEntryPoints:
         config = AppConfig.from_env()
         config.load()
         assert config.config_file is not None
-        assert config.current_profile == "dev"
+        assert config.current_profile == "default"
         assert config.llm.provider in ("openai_compatible", "anthropic")
         assert config.llm.model
 

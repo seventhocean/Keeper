@@ -70,7 +70,7 @@ def _get_system_prompt() -> str:
         return _FALLBACK_SYSTEM_PROMPT
 
 
-_FALLBACK_SYSTEM_PROMPT = """你是 Keeper，一个智能运维 Agent（当前版本 v1.0.0）。你拥有和资深 Linux 运维工程师一样的能力。
+_FALLBACK_SYSTEM_PROMPT = """你是 Keeper，一个智能运维 Agent（当前版本 v1.1.0）。你拥有和资深 Linux 运维工程师一样的能力。
 
 ## 关于你自己（Keeper 是什么）
 Keeper 是一个类 Claude Code 的对话式 CLI 运维工具，运行在终端中。用户通过自然语言与你对话来管理服务器。
@@ -329,6 +329,11 @@ class AgentLoop:
         turn = AgentTurn(user_input=user_input)
 
         try:
+            # Check if context has changed (TTL expired) and invalidate agent
+            if self._agent is not None and self.context_injector._last_context is not None:
+                if (time.time() - self.context_injector._last_collect_time) >= self.context_injector._cache_ttl:
+                    self._agent = None  # Force re-creation with updated context
+
             # 初始化 agent（触发模式检测）
             _ = self.agent
             turn.mode = self.active_mode
@@ -574,33 +579,35 @@ class AgentLoop:
                                 "type": "warning",
                                 "message": f"需确认 [{level.value}]",
                             })
-
-                        # 执行工具
-                        t_start = time.time()
-                        if tool_name in tool_map:
-                            try:
-                                result = tool_map[tool_name].invoke(tool_args)
-                            except Exception as e:
-                                result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+                            result = f"[安全限制] 工具 {tool_name} 需要用户确认才能执行 (安全等级: {level.value})，请向用户询问是否允许执行。"
+                            t_duration = 0
                         else:
-                            result = f"[错误] 未知工具: {tool_name}"
-                        t_duration = int((time.time() - t_start) * 1000)
+                            # 执行工具
+                            t_start = time.time()
+                            if tool_name in tool_map:
+                                try:
+                                    result = tool_map[tool_name].invoke(tool_args)
+                                except Exception as e:
+                                    result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+                            else:
+                                result = f"[错误] 未知工具: {tool_name}"
+                            t_duration = int((time.time() - t_start) * 1000)
 
-                        # 智能压缩（替代硬截断）
-                        compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
-                        result = compressed.content
-                        if compressed.strategy != "none":
+                            # 智能压缩（替代硬截断）
+                            compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
+                            result = compressed.content
+                            if compressed.strategy != "none":
+                                _emit(callback, {
+                                    "type": "warning",
+                                    "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+                                })
+
                             _emit(callback, {
-                                "type": "warning",
-                                "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+                                "type": "tool_result",
+                                "tool": tool_name,
+                                "duration_ms": t_duration,
+                                "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
                             })
-
-                        _emit(callback, {
-                            "type": "tool_result",
-                            "tool": tool_name,
-                            "duration_ms": t_duration,
-                            "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
-                        })
 
                     # 记录
                     turn.tool_calls.append(ToolCall(

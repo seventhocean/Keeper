@@ -47,7 +47,7 @@ def handle_send_notify(entities: Dict[str, Any], *, config, state, agent_ref) ->
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     sections.append([{"tag": "text", "text": f"时间: {now}"}])
 
-    ok = notifier.send_rich(title=title, sections=sections, footer="Keeper v1.0.0")
+    ok = notifier.send_rich(title=title, sections=sections, footer="Keeper v1.1.0")
     if ok:
         return "[通知] 已将最近操作结果推送到飞书"
     return "[通知] 推送失败，请检查 Webhook 配置和网络连接"

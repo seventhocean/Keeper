@@ -13,7 +13,7 @@
 import time
 import subprocess
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -32,9 +32,9 @@ class HostContext:
 @dataclass
 class TaskContext:
     """任务级别上下文"""
-    recent_hosts: list = ()       # 最近操作过的主机
-    recent_tools: list = ()       # 最近使用的工具
-    recent_conclusions: list = () # 最近的结论摘要
+    recent_hosts: list = field(default_factory=list)       # 最近操作过的主机
+    recent_tools: list = field(default_factory=list)       # 最近使用的工具
+    recent_conclusions: list = field(default_factory=list) # 最近的结论摘要
 
 
 @dataclass
@@ -152,13 +152,13 @@ class ContextInjector:
         try:
             from keeper.storage.history import InspectionHistory
             history = InspectionHistory()
-            last = history.get_last("localhost")
-            if last:
-                host_ctx.last_inspect_cpu = last.get("cpu")
-                host_ctx.last_inspect_mem = last.get("memory")
-                host_ctx.last_inspect_disk = last.get("disk")
-                ts = last.get("timestamp", "")
-                host_ctx.last_inspect_time = ts[:16].replace("T", " ") if ts else "未知"
+            records = history.get_latest("localhost", n=1)
+            if records:
+                last = records[0]
+                host_ctx.last_inspect_cpu = last.cpu_percent
+                host_ctx.last_inspect_mem = last.memory_percent
+                host_ctx.last_inspect_disk = last.disk_percent
+                host_ctx.last_inspect_time = last.timestamp[:16].replace("T", " ") if last.timestamp else "未知"
         except Exception:
             pass
 
@@ -172,10 +172,10 @@ class ContextInjector:
         try:
             from keeper.storage.history import InspectionHistory
             history = InspectionHistory()
-            recent = history.get_recent(limit=5)
+            recent = history.get_latest("localhost", n=5)
             hosts = []
             for r in recent:
-                h = r.get("host", "")
+                h = r.host
                 if h and h not in hosts:
                     hosts.append(h)
             task_ctx.recent_hosts = hosts

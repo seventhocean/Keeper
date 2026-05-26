@@ -158,7 +158,7 @@ def create_app() -> "FastAPI":
             "## WebSocket\n"
             "WebSocket 接口 `/ws/query` 支持流式输出，实时推送工具调用过程。"
         ),
-        version="1.0.0",
+        version="1.1.0",
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -234,7 +234,7 @@ def create_app() -> "FastAPI":
         from datetime import datetime
         return HealthResponse(
             status="ok",
-            version="1.0.0",
+            version="1.1.0",
             timestamp=datetime.now().isoformat(),
         )
 
@@ -248,7 +248,7 @@ def create_app() -> "FastAPI":
         uptime = int(time.time() - app.state.start_time)
         from ..agent.tools_registry import ALL_TOOLS
         return StatusResponse(
-            version="1.0.0",
+            version="1.1.0",
             llm_configured=config.is_llm_configured(),
             llm_provider=config.llm.provider,
             llm_model=config.llm.model,
