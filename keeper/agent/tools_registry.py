@@ -1214,6 +1214,10 @@ def install_runbook(name: str, description: str, yaml_content: str) -> str:
     )
 
 
+# Runbook 安装
+ALL_TOOLS.append(install_runbook)
+
+
 def get_tools_description() -> str:
     """获取所有工具的描述（用于展示能力列表）"""
     lines = ["\n🔧 可用工具列表：", "=" * 40]

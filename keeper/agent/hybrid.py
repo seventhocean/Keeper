@@ -141,16 +141,6 @@ class HybridAgent:
             if self._first_turn:
                 self._first_turn = False
                 self.agent_loop.context_injector.collect(augmented_input)
-                # 首次对话仍用旧方式注入（因为 system prompt 在 LangGraph 中初始化后不可变）
-                recent = self.memory.get_recent(3)
-                if recent:
-                    lines = ["[上次工作回顾]"]
-                    for entry in recent:
-                        time_str = entry.timestamp[:16].replace("T", " ")
-                        lines.append(f"  • [{time_str}] {entry.user_input}")
-                        lines.append(f"    结论: {entry.conclusion[:100]}")
-                    lines.append("")
-                    augmented_input = "\n".join(lines) + f"[当前问题]\n{augmented_input}"
             else:
                 # 后续对话：通过 ContextInjector 获取相关记忆
                 self.agent_loop.context_injector.collect(augmented_input)
