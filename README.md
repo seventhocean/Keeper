@@ -82,7 +82,7 @@ Agent 拥有 28+ 个工具（支持用户动态安装 Runbook），LLM 自主选
 | 运维 | manage_systemd_service, execute_shell_command | 服务管理、安全 Shell |
 | SSH | inspect_remote_server | SSH 远程巡检 |
 | 分析 | compare_inspection, predict_capacity | 巡检对比、容量预测 |
-| Runbook | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate | 标准化运维流程 |
+| Runbook | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate, install_runbook | 标准化运维流程 + 动态安装 |
 | 自由 | run_bash, read_file, write_file, list_directory, search_files | 通用操作 |
 
 ### 流式执行
@@ -316,7 +316,7 @@ keeper/
 ├── agent/          ← Agent Loop 引擎（HybridAgent + ReAct + 流式）
 │   ├── loop.py              ← LangGraph / Manual 双模式 + 上下文注入 + 输出压缩
 │   ├── hybrid.py            ← Fast Path + Agent Loop + 降级 + 状态总线 + 结构化提问
-│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册
+│   ├── tools_registry.py    ← 28+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册（含 install_runbook）
 │   ├── planner.py           ← 6 个排查模板 + 动态计划生成
 │   ├── memory.py            ← 长期记忆（JSON 持久化）
 │   ├── safety.py            ← 四级安全检查
@@ -326,6 +326,7 @@ keeper/
 │   ├── commands.py          ← 命令系统（/clear /status /tools 等）
 │   ├── state.py             ← 状态总线 + TodoWrite 任务追踪
 │   ├── compressor.py        ← 工具输出压缩管线
+│   ├── confirm.py           ← 交互式确认模块（Claude Code 风格 RadioList）
 │   └── ask_user.py          ← 结构化提问解析器
 ├── api/            ← FastAPI REST 服务
 ├── cli.py          ← Click + Prompt Toolkit 入口
@@ -365,12 +366,32 @@ keeper/
 
 ```bash
 # 测试
-pytest tests/ -v              # 单元测试
+pytest tests/ -v              # 全部测试（644+ 用例）
 pytest tests/ --cov=keeper     # 覆盖率报告
+pytest tests/ -m "not integration"  # 仅单元测试
 
 # 代码检查
 flake8 keeper/ --max-line-length=120
 ```
+
+### 测试覆盖率
+
+| 指标 | 数值 |
+|------|------|
+| 全局覆盖率 | 33% |
+| **有效覆盖率**（排除不可测系统层） | **87%** |
+| 测试用例数 | 644+ |
+| 测试文件数 | 17 |
+
+> **关于「有效覆盖率」**: 全局 33% 偏低是因为约 6500 行代码属于 CLI 入口（Click/prompt_toolkit）、K8s SDK、Docker SDK、系统信号、subprocess 调用等**进程级框架或外部系统依赖**，需要通过依赖注入重构才能进行单元测试。排除这些后，纯逻辑模块的覆盖率为 87%。
+
+**核心已覆盖模块**（覆盖率 ≥ 90%）：
+
+| 领域 | 模块 | 覆盖率 |
+|------|------|--------|
+| Agent 引擎 | `safety.py`, `compressor.py`, `planner.py`, `state.py`, `memory.py` | 94–100% |
+| 工具层 | `validators.py`, `comparator.py`, `capacity.py`, `reporter.py`, `notify.py`, `alert.py` | 96–100% |
+| 基础设施 | `exceptions.py`, `audit.py`, `context.py`, `history.py`, `models.py` | 94–100% |
 
 ---
 

@@ -87,7 +87,7 @@ keeper/
 ├── agent/                    ← Agent Loop 引擎
 │   ├── loop.py              ← ReAct Agent Loop（LangGraph / 手动两种模式 + 上下文注入 + 输出压缩）
 │   ├── hybrid.py            ← HybridAgent — Fast Path + Agent Loop + 降级 + 状态总线 + 结构化提问
-│   ├── tools_registry.py    ← 23+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册
+│   ├── tools_registry.py    ← 28+ 个 @tool 注册 + ToolMeta 协议 + 动态 Runbook 注册（含 install_runbook）
 │   ├── planner.py           ← 6 个排查模板 + 动态计划生成
 │   ├── memory.py            ← 长期记忆（JSON 持久化）
 │   ├── safety.py            ← 四级安全检查
@@ -97,6 +97,7 @@ keeper/
 │   ├── commands.py          ← 命令系统（/clear /status /tools 等）
 │   ├── state.py             ← 状态总线 + TodoWrite 任务追踪
 │   ├── compressor.py        ← 工具输出压缩管线
+│   ├── confirm.py           ← 交互式确认模块（Claude Code 风格 RadioList + 三级确认 API）
 │   └── ask_user.py          ← 结构化提问解析器
 ├── api/
 │   └── server.py            ← FastAPI REST 服务（/health, /api/v1/query, /api/v1/tools 等端点）
@@ -152,6 +153,15 @@ keeper/
 
 每个工具在 `TOOL_PERMISSIONS` 表中预定义安全等级。`execute_shell_command` 内部有额外正则检查。
 
+### 确认交互（`keeper/agent/confirm.py`）
+
+Agent Loop 在执行 `WRITE` / `DESTRUCTIVE` 级别工具前，通过 `confirm_action()` 弹出终端确认对话框。基于 prompt_toolkit RadioList 实现 Claude Code 风格交互：
+
+- **三种 API**：`confirm_action()`（Yes/No/Always Allow）、`select_option()`（多选列表）、`select_or_input()`（选项 + 自定义输入）
+- **集成方式**：`AgentLoop._wrap_tools_with_confirmation()` 在启动时自动包装所有非只读工具，LangGraph 和手动模式均生效
+- **会话缓存**：用户选择 "Always Allow" 后，同一工具在同一会话中不再重复确认
+- **非 TTY 降级**：WRITE 自动放行、DESTRUCTIVE 自动拒绝、select 返回第一项
+
 ### 计划模式（`keeper/agent/planner.py`）
 
 6 个预定义排查模板：`cpu_high`, `service_down`, `k8s_issue`, `security_audit`, `disk_full`, `network_issue`。简单任务直接执行，复杂任务（匹配 `为什么/排查/分析/全面` 等关键词）先展示计划，用户确认后执行。
@@ -187,6 +197,48 @@ pytest tests/ -m "not requires_llm"   # 跳过需要 LLM API Key 的测试
 ```
 
 3 个自定义标记：`integration`（依赖真实系统环境）、`slow`（>5s）、`requires_llm`（需要 LLM API Key）。`conftest.py` 提供 `tmp_config_dir`、`mock_llm` 等统一 fixture。
+
+### 测试覆盖率
+
+**全局覆盖率**: 33%（644+ 测试用例，1 个预存的集成测试失败）
+
+**排除不可测系统层后的有效覆盖率**: 87%（2756 行可测代码中覆盖 2387 行）
+
+不可测模块（硬依赖 Click/prompt_toolkit/K8s SDK/Docker SDK/系统信号/psutil/subprocess，无依赖注入接口）：
+
+| 类别 | 排除行数 | 模块 |
+|------|----------|------|
+| CLI/API | 1261 | `cli.py`, `api/server.py` |
+| K8s | 955 | `tools/k8s/client.py`, `inspector.py`, `formatter.py`, `logs.py`, `ops.py` |
+| Handlers | 878 | `core/handlers/` 全部 11 个文件 |
+| Agent 硬依赖 | 1461 | `loop.py`, `tools_registry.py`, `plugins.py`, `free_tools.py`, `context_injector.py`, `commands.py`, `ask_user.py` |
+| 系统工具 | ~900 | `tools/` 下含 subprocess/psutil/Docker 调用的模块 |
+| 其他系统层 | 1097 | `core/agent.py`, `compliance/`, `utils/`, `notify/`, `integrations/` |
+
+**已达标模块**（≥95%）：
+
+| 模块 | 覆盖率 |
+|------|--------|
+| `keeper/agent/safety.py` | 100% |
+| `keeper/agent/compressor.py` | 99% |
+| `keeper/agent/planner.py` | 98% |
+| `keeper/agent/state.py` | 98% |
+| `keeper/agent/memory.py` | 94% |
+| `keeper/agent/confirm.py` | 88% |
+| `keeper/validators.py` | 100% |
+| `keeper/exceptions.py` | 100% |
+| `keeper/core/context.py` | 100% |
+| `keeper/core/audit.py` | 94% |
+| `keeper/storage/history.py` | 100% |
+| `keeper/tools/comparator.py` | 99% |
+| `keeper/tools/capacity.py` | 99% |
+| `keeper/tools/reporter.py` | 99% |
+| `keeper/tools/notify.py` | 96% |
+| `keeper/tools/alert.py` | 100% |
+| `keeper/runbook/models.py` | 100% |
+| `keeper/nlu/base.py` | 95% |
+
+测试文件：17 个，覆盖 agent 引擎、安全控制、确认交互、配置管理、工具模块、报告导出、容量预测等核心逻辑。
 
 ### CLI 入口
 

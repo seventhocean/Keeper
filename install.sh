@@ -120,12 +120,24 @@ fi
 
 log_ok "找到 $PYTHON_CMD (Python $PYTHON_VER)"
 
+# ─── Check venv module ────────────────────────────────────────────────────────
+if ! "$PYTHON_CMD" -c "import venv" 2>/dev/null; then
+    log_error "缺少 python3-venv 模块，无法创建虚拟环境。"
+    echo ""
+    echo -e "${BOLD}请安装 python3-venv：${NC}"
+    echo "  Ubuntu/Debian:  sudo apt install python3-venv"
+    echo "  CentOS/RHEL:    sudo yum install python3-venv"
+    echo "  macOS:          通常内置"
+    exit 1
+fi
+
 # ─── Clone/Download ──────────────────────────────────────────────────────────
 if [ -d "$KEEPER_DIR/.git" ] && [ "$MODE" = "upgrade" ]; then
     log_step "升级 Keeper"
     cd "$KEEPER_DIR"
     git stash --include-untracked &>/dev/null || true
     if git pull origin "$KEEPER_BRANCH"; then
+        git stash pop &>/dev/null || true
         log_ok "代码已更新"
     else
         log_warn "pull 失败，尝试重新克隆..."
@@ -157,8 +169,8 @@ fi
 source "$KEEPER_DIR/venv/bin/activate"
 
 # Upgrade pip and install
-pip install --upgrade pip -q 2>/dev/null
-pip install -e "$KEEPER_DIR" -q 2>/dev/null
+pip install --upgrade pip
+pip install -e "$KEEPER_DIR"
 
 log_ok "依赖安装完成"
 
