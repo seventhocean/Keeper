@@ -156,9 +156,20 @@ class HybridAgent:
             for tc in last_tool_calls:
                 parsed = ask_user_parser.parse(tc.tool_name, tc.result)
                 if parsed.needs_user_input:
-                    formatted = ask_user_parser.format_for_display(parsed)
-                    # 在回复末尾追加结构化提问
-                    response = response.rstrip() + "\n" + formatted
+                    # 尝试使用交互式选择
+                    if parsed.questions and parsed.questions[0].options:
+                        try:
+                            from keeper.agent.confirm import select_option
+                            question = parsed.questions[0]
+                            selected = select_option(question.question, list(question.options))
+                            response = response.rstrip() + f"\n[用户选择] {selected}"
+                        except Exception:
+                            formatted = ask_user_parser.format_for_display(parsed)
+                            response = response.rstrip() + "\n" + formatted
+                    else:
+                        formatted = ask_user_parser.format_for_display(parsed)
+                        # 在回复末尾追加结构化提问
+                        response = response.rstrip() + "\n" + formatted
                     break
 
             # 同步状态到状态总线
