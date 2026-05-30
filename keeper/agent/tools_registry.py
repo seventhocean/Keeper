@@ -26,7 +26,7 @@ class ToolMeta:
     is_read_only: bool = False
     is_concurrency_safe: bool = False
     timeout_sec: int = 30
-    tags: list = ()  # 用途标签：server / log / network / k8s / docker / security / runbook / general
+    tags: tuple = ()  # 用途标签：server / log / network / k8s / docker / security / runbook / general
 
 
 # 工具元数据注册表（按工具名索引）
@@ -823,6 +823,18 @@ register_tool_meta("execute_shell_command", ToolMeta(
 # Runbook 运维手册工具
 # ═══════════════════════════════════════════════════════════════
 
+
+def _runbook_confirm_adapter(prompt: str) -> bool:
+    """适配 confirm_action 到 RunbookExecutor 的 confirm_callback 签名"""
+    from keeper.agent.confirm import confirm_action
+    # 检测 prompt 中的安全等级标记
+    if "[destructive]" in prompt.lower():
+        safety_level = "destructive"
+    else:
+        safety_level = "write"
+    return confirm_action("runbook_step", {"prompt": prompt}, safety_level)
+
+
 @tool
 def runbook_disk_cleanup(threshold: int = 85, log_retention_days: int = 30) -> str:
     """执行磁盘清理 Runbook — 检查磁盘使用率、查找大文件、清理旧日志和缓存。
@@ -838,7 +850,7 @@ def runbook_disk_cleanup(threshold: int = 85, log_retention_days: int = 30) -> s
     """
     from keeper.runbook.executor import RunbookExecutor
     template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
-    executor = RunbookExecutor()
+    executor = RunbookExecutor(confirm_callback=_runbook_confirm_adapter)
     try:
         runbook = executor.load_from_yaml(str(template_dir / "disk_cleanup.yaml"))
         ok, summary = executor.execute(runbook, {"threshold": str(threshold), "log_retention_days": str(log_retention_days)})
@@ -870,7 +882,7 @@ def runbook_service_restart(service_name: str = "nginx", wait_seconds: int = 5) 
     """
     from keeper.runbook.executor import RunbookExecutor
     template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
-    executor = RunbookExecutor()
+    executor = RunbookExecutor(confirm_callback=_runbook_confirm_adapter)
     try:
         runbook = executor.load_from_yaml(str(template_dir / "service_restart.yaml"))
         ok, summary = executor.execute(runbook, {"service_name": service_name, "wait_seconds": str(wait_seconds)})
@@ -900,7 +912,7 @@ def runbook_log_rotate(log_path: str = "/var/log") -> str:
     """
     from keeper.runbook.executor import RunbookExecutor
     template_dir = __import__('pathlib').Path(__file__).parent.parent / "runbook" / "templates"
-    executor = RunbookExecutor()
+    executor = RunbookExecutor(confirm_callback=_runbook_confirm_adapter)
     try:
         runbook = executor.load_from_yaml(str(template_dir / "log_rotate.yaml"))
         ok, summary = executor.execute(runbook, {"log_path": log_path})
@@ -1212,6 +1224,10 @@ def install_runbook(name: str, description: str, yaml_content: str) -> str:
         f"  保存位置: {save_path}\n\n"
         f"后续对话中可直接提及名称，我会自动调用此 Runbook。"
     )
+
+
+# Runbook 安装
+ALL_TOOLS.append(install_runbook)
 
 
 def get_tools_description() -> str:

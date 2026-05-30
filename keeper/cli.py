@@ -57,7 +57,7 @@ def create_agent(config: AppConfig) -> Agent:
 
 
 @click.group(invoke_without_command=True)
-@click.version_option(version='1.0.0')
+@click.version_option(version='1.1.0')
 @click.option('--classic', is_flag=True, help='使用经典路由器模式（不使用 Agent Loop）')
 @click.pass_context
 def cli(ctx, classic):
@@ -443,36 +443,13 @@ def logs(hours, host, intent, as_json):
         keeper logs --intent inspect
         keeper logs --json
     """
-    from keeper.core.agent import Agent
-    from keeper.nlu.langchain_engine import LangChainEngine, LLMProvider
+    from keeper.core.audit import AuditLogger
 
-    # 加载配置
-    config = AppConfig.from_env()
-    config.load()
-
-    # 检查 API Key
-    if not config.is_llm_configured():
-        click.echo(click.style("[错误] 请配置 API Key:", fg='red'))
-        click.echo("  使用：keeper config set --api-key YOUR_API_KEY")
-        sys.exit(1)
-
-    # 创建 Agent（用于获取审计日志）
-    provider_map = {
-        "openai_compatible": LLMProvider.OPENAI_COMPATIBLE,
-        "anthropic": LLMProvider.ANTHROPIC,
-    }
-    provider = provider_map.get(config.llm.provider, LLMProvider.OPENAI_COMPATIBLE)
-    engine = LangChainEngine(
-        provider=provider,
-        api_key=config.llm.api_key,
-        base_url=config.llm.base_url,
-        model=config.llm.model,
-    )
-    engine.load()
-    agent = Agent(nlu_engine=engine, config=config)
+    # 直接使用 AuditLogger（审计日志存储在本地 SQLite，无需 LLM）
+    audit = AuditLogger()
 
     # 查询审计日志
-    records = agent.audit.get_history(hours=hours, limit=100, host=host, intent=intent)
+    records = audit.get_history(hours=hours, limit=100, host=host, intent=intent)
 
     if not records:
         click.echo(f"[日志] 过去 {hours} 小时内没有找到操作记录")

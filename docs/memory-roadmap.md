@@ -36,13 +36,13 @@
 - ✅ **后续对话通过 ContextInjector 被动注入相关记忆**（v1.1.0 新增）
 - ✅ **`/memory` 命令支持 `--host`/`--cat`/`--search`/`--date` 筛选**（v1.1.0 新增）
 - ✅ **TodoWrite 任务追踪**（v1.1.0 新增）
-- ❌ InspectionHistory 从不自动采集巡检数据
+- ✅ InspectionHistory 自动采集巡检数据（inspect_server 执行后自动写入 SQLite）
 
 ## 待实现
 
 ### P0: 巡检数据自动采集
 
-- [ ] `inspect_server` 执行后自动写入 `InspectionHistory`（SQLite）
+- [x] `inspect_server` 执行后自动写入 `InspectionHistory`（SQLite）
 - [ ] 配合 `Comparator` 实现「和三天前对比，CPU 涨了 20%」
 - [ ] 配合 `CapacityPredictor` 实现「按趋势，磁盘将在 7 天后满」
 

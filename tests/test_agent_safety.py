@@ -231,6 +231,84 @@ class TestToolPermissions:
         assert v.allowed is True
 
 
+class TestBatchCheck:
+    """批量安全检查"""
+
+    def test_multiple_commands(self):
+        results = CommandSafetyChecker.batch_check([
+            "ps aux",
+            "rm -rf /",
+            "systemctl restart nginx",
+            "journalctl --vacuum-size=100M",
+        ])
+        assert len(results) == 4
+        assert results[0].level == SafetyLevel.READ_ONLY
+        assert results[1].level == SafetyLevel.DANGEROUS
+        assert results[2].level == SafetyLevel.WRITE
+        assert results[3].level == SafetyLevel.DESTRUCTIVE
+
+    def test_empty_list(self):
+        results = CommandSafetyChecker.batch_check([])
+        assert results == []
+
+
+class TestFormatVerdict:
+    """format_verdict 格式化"""
+
+    def test_read_only_icon(self):
+        v = CommandSafetyChecker.check("ps aux")
+        text = CommandSafetyChecker.format_verdict(v)
+        assert "🟢" in text
+        assert "允许" in text
+
+    def test_write_icon(self):
+        v = CommandSafetyChecker.check("kill 1234")
+        text = CommandSafetyChecker.format_verdict(v)
+        assert "🟡" in text
+        assert "需确认" in text
+
+    def test_destructive_icon(self):
+        v = CommandSafetyChecker.check("docker system prune")
+        text = CommandSafetyChecker.format_verdict(v)
+        assert "🟠" in text
+
+    def test_dangerous_icon(self):
+        v = CommandSafetyChecker.check("rm -rf /")
+        text = CommandSafetyChecker.format_verdict(v)
+        assert "🔴" in text
+        assert "拒绝" in text
+
+
+class TestSafetyEdgeCases:
+    """边界情况"""
+
+    def test_unknown_command_defaults_to_write(self):
+        """未匹配任何模式的命令默认 WRITE"""
+        v = CommandSafetyChecker.check("some_unknown_command --flag")
+        assert v.level == SafetyLevel.WRITE
+        assert v.allowed is False
+        assert v.requires_confirmation is True
+
+    def test_priority_dangerous_over_write(self):
+        """黑名单优先于灰名单"""
+        # rm -rf 匹配 DANGEROUS_PATTERNS(rm -rf) 和 WRITE_PATTERNS(kill) 都不匹配
+        # 但 rm -rf 独占黑名单
+        v = CommandSafetyChecker.check("rm -rf /tmp/data")
+        assert v.level == SafetyLevel.DANGEROUS
+
+    def test_priority_destructive_over_write(self):
+        """破坏性优先于写操作"""
+        v = CommandSafetyChecker.check("find /tmp -name '*.log' -delete")
+        assert v.level == SafetyLevel.DESTRUCTIVE
+
+    def test_read_only_unrecognized_prefix(self):
+        """以白名单前缀开头但不在白名单中的命令默认为 WRITE"""
+        v = CommandSafetyChecker.check("python3 -c 'import os; os.system(\"rm -rf /\")'")
+        # python3 --version 在白名单，但 "python3 -c ..." 不在
+        # 黑名单检查会拦截（因为包含 rm -rf）
+        assert v.level == SafetyLevel.DANGEROUS
+
+
 if __name__ == "__main__":
     import pytest
     pytest.main([__file__, "-v"])

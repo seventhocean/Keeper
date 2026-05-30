@@ -12,7 +12,10 @@
 └──────────────────────────────────────────────────────────────┘
 """
 import time
+import logging
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 from keeper.config import AppConfig
 from keeper.core.audit import AuditLogger
@@ -141,16 +144,6 @@ class HybridAgent:
             if self._first_turn:
                 self._first_turn = False
                 self.agent_loop.context_injector.collect(augmented_input)
-                # 首次对话仍用旧方式注入（因为 system prompt 在 LangGraph 中初始化后不可变）
-                recent = self.memory.get_recent(3)
-                if recent:
-                    lines = ["[上次工作回顾]"]
-                    for entry in recent:
-                        time_str = entry.timestamp[:16].replace("T", " ")
-                        lines.append(f"  • [{time_str}] {entry.user_input}")
-                        lines.append(f"    结论: {entry.conclusion[:100]}")
-                    lines.append("")
-                    augmented_input = "\n".join(lines) + f"[当前问题]\n{augmented_input}"
             else:
                 # 后续对话：通过 ContextInjector 获取相关记忆
                 self.agent_loop.context_injector.collect(augmented_input)
@@ -166,9 +159,21 @@ class HybridAgent:
             for tc in last_tool_calls:
                 parsed = ask_user_parser.parse(tc.tool_name, tc.result)
                 if parsed.needs_user_input:
-                    formatted = ask_user_parser.format_for_display(parsed)
-                    # 在回复末尾追加结构化提问
-                    response = response.rstrip() + "\n" + formatted
+                    # 尝试使用交互式选择
+                    if parsed.questions and parsed.questions[0].options:
+                        try:
+                            from keeper.agent.confirm import select_option
+                            question = parsed.questions[0]
+                            selected = select_option(question.question, list(question.options))
+                            response = response.rstrip() + f"\n[用户选择] {selected}"
+                        except (EOFError, KeyboardInterrupt, OSError, ValueError) as e:
+                            logger.debug("select_option failed, falling back to text display: %s", e)
+                            formatted = ask_user_parser.format_for_display(parsed)
+                            response = response.rstrip() + "\n" + formatted
+                    else:
+                        formatted = ask_user_parser.format_for_display(parsed)
+                        # 在回复末尾追加结构化提问
+                        response = response.rstrip() + "\n" + formatted
                     break
 
             # 同步状态到状态总线

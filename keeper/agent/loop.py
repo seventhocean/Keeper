@@ -209,6 +209,7 @@ class AgentLoop:
         self.active_mode: Optional[str] = None
         self._agent = None
         self._llm = None
+        self._current_callback: Optional[Callable] = None
         self.conversation_history: List[Dict[str, str]] = []
         self.last_turn: Optional[AgentTurn] = None
         self.context_injector = ContextInjector(memory=memory)
@@ -230,6 +231,49 @@ class AgentLoop:
         # permission_mode == "allow" 不做过滤（默认行为）
 
         return tools
+
+    def _wrap_tools_with_confirmation(self, tools):
+        """对非 READ_ONLY 工具添加确认包装（LangGraph 模式用）
+
+        READ_ONLY 工具直接通过，无额外开销。
+        WRITE/DESTRUCTIVE 工具在调用前弹出确认。
+        """
+        from .safety import is_tool_auto_allowed, get_tool_permission
+
+        wrapped = []
+        for t in tools:
+            tname = get_tool_name(t)
+            if is_tool_auto_allowed(tname):
+                wrapped.append(t)
+            else:
+                level = get_tool_permission(tname)
+                wrapped.append(self._make_wrapped_tool(t, tname, level))
+        return wrapped
+
+    def _make_wrapped_tool(self, original_tool, tool_name, safety_level):
+        """创建带确认的包装工具"""
+        from langchain_core.tools import StructuredTool
+
+        agent_loop = self  # 闭包捕获
+
+        def wrapped_func(**kwargs):
+            _emit(agent_loop._current_callback, {
+                "type": "confirm",
+                "tool": tool_name,
+                "args": kwargs,
+                "safety_level": safety_level.value,
+            })
+            from keeper.agent.confirm import confirm_action
+            if not confirm_action(tool_name, kwargs, safety_level.value):
+                return f"[用户拒绝] 操作已取消: {tool_name}"
+            return original_tool.invoke(kwargs)
+
+        return StructuredTool(
+            name=tool_name,
+            description=original_tool.description,
+            func=wrapped_func,
+            args_schema=getattr(original_tool, 'args_schema', None),
+        )
 
     def _detect_mode(self) -> str:
         """自动检测可用模式"""
@@ -293,9 +337,10 @@ class AgentLoop:
         """方式 1：LangGraph ReAct Agent"""
         from langgraph.prebuilt import create_react_agent
         prompt = self._build_system_prompt_with_context()
+        wrapped_tools = self._wrap_tools_with_confirmation(self._get_tools())
         return create_react_agent(
             model=self.llm,
-            tools=self._get_tools(),
+            tools=wrapped_tools,
             prompt=prompt,
         )
 
@@ -361,6 +406,8 @@ class AgentLoop:
     ) -> str:
         """LangGraph 流式执行 — 逐步展示 + 错误恢复"""
         from langchain_core.messages import HumanMessage, AIMessage
+
+        self._current_callback = callback
 
         messages = []
         for h in self.conversation_history[-self.MAX_HISTORY_TURNS:]:
@@ -479,6 +526,8 @@ class AgentLoop:
                 all_raw_messages = final["messages"]
             except Exception:
                 raise e
+        finally:
+            self._current_callback = None
 
         # 提取最终回复
         response = ""
@@ -499,6 +548,41 @@ class AgentLoop:
 
         self._add_history(user_input, response)
         return response
+
+    def _execute_tool(self, tool_name, tool_args, tool_map, callback):
+        """Execute a tool, compress output, and emit result event.
+
+        Returns:
+            Tuple of (result_text, duration_ms, success)
+        """
+        t_start = time.time()
+        if tool_name in tool_map:
+            try:
+                result = tool_map[tool_name].invoke(tool_args)
+            except Exception as e:
+                result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+        else:
+            result = f"[错误] 未知工具: {tool_name}"
+        t_duration = int((time.time() - t_start) * 1000)
+
+        # 智能压缩
+        compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
+        result = compressed.content
+        if compressed.strategy != "none":
+            _emit(callback, {
+                "type": "warning",
+                "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+            })
+
+        success = not result.startswith("[错误]") and not result.startswith("[工具执行错误]")
+        _emit(callback, {
+            "type": "tool_result",
+            "tool": tool_name,
+            "duration_ms": t_duration,
+            "success": success,
+        })
+
+        return result, t_duration, success
 
     def _run_manual(
         self, user_input: str, turn: AgentTurn, callback: Optional[Callable]
@@ -575,44 +659,30 @@ class AgentLoop:
                         if not is_tool_auto_allowed(tool_name):
                             level = get_tool_permission(tool_name)
                             _emit(callback, {
-                                "type": "warning",
-                                "message": f"需确认 [{level.value}]",
-                            })
-                            result = f"[安全限制] 工具 {tool_name} 需要用户确认才能执行 (安全等级: {level.value})，请向用户询问是否允许执行。"
-                            t_duration = 0
-                            _emit(callback, {
-                                "type": "tool_result",
+                                "type": "confirm",
                                 "tool": tool_name,
-                                "duration_ms": 0,
-                                "success": False,
+                                "args": tool_args,
+                                "safety_level": level.value,
                             })
-                        else:
-                            # 执行工具
-                            t_start = time.time()
-                            if tool_name in tool_map:
-                                try:
-                                    result = tool_map[tool_name].invoke(tool_args)
-                                except Exception as e:
-                                    result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+                            from keeper.agent.confirm import confirm_action
+                            if confirm_action(tool_name, tool_args, level.value):
+                                # 用户确认，正常执行工具
+                                result, t_duration, _ = self._execute_tool(
+                                    tool_name, tool_args, tool_map, callback)
                             else:
-                                result = f"[错误] 未知工具: {tool_name}"
-                            t_duration = int((time.time() - t_start) * 1000)
-
-                            # 智能压缩（替代硬截断）
-                            compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
-                            result = compressed.content
-                            if compressed.strategy != "none":
+                                # 用户拒绝
+                                result = f"[用户拒绝] 操作已取消: {tool_name}"
+                                t_duration = 0
                                 _emit(callback, {
-                                    "type": "warning",
-                                    "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+                                    "type": "tool_result",
+                                    "tool": tool_name,
+                                    "duration_ms": 0,
+                                    "success": False,
                                 })
-
-                            _emit(callback, {
-                                "type": "tool_result",
-                                "tool": tool_name,
-                                "duration_ms": t_duration,
-                                "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
-                            })
+                        else:
+                            # 自动放行的工具
+                            result, t_duration, _ = self._execute_tool(
+                                tool_name, tool_args, tool_map, callback)
 
                     # 记录
                     turn.tool_calls.append(ToolCall(

@@ -98,8 +98,7 @@ class OutputCompressor:
                     important.append((i, line))
 
             if important:
-                header = f"[日志摘要] 共 {len(lines)} 行，其中 {len(important)} 条重要记录:"
-                kept = []
+                kept = [f"[日志摘要] 共 {len(lines)} 行，其中 {len(important)} 条重要记录:"]
                 # 首 3 行
                 for line in lines[:3]:
                     kept.append(line)
