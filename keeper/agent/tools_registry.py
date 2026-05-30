@@ -827,7 +827,12 @@ register_tool_meta("execute_shell_command", ToolMeta(
 def _runbook_confirm_adapter(prompt: str) -> bool:
     """适配 confirm_action 到 RunbookExecutor 的 confirm_callback 签名"""
     from keeper.agent.confirm import confirm_action
-    return confirm_action("runbook_step", {"prompt": prompt}, "write")
+    # 检测 prompt 中的安全等级标记
+    if "[destructive]" in prompt.lower():
+        safety_level = "destructive"
+    else:
+        safety_level = "write"
+    return confirm_action("runbook_step", {"prompt": prompt}, safety_level)
 
 
 @tool

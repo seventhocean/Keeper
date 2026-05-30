@@ -11,7 +11,10 @@
 """
 import sys
 import json
+import logging
 from typing import List
+
+logger = logging.getLogger(__name__)
 
 # prompt_toolkit 可能未安装，做优雅降级
 try:
@@ -61,6 +64,10 @@ def confirm_action(tool_name: str, args: dict, safety_level: str) -> bool:
     if not sys.stdin.isatty():
         level = safety_level.lower()
         if level == "write":
+            logger.info(
+                "Non-TTY auto-approve: tool=%s args=%s safety_level=%s",
+                tool_name, _format_args_summary(args), safety_level,
+            )
             return True
         # destructive 及以上自动拒绝
         return False

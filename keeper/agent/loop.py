@@ -526,6 +526,8 @@ class AgentLoop:
                 all_raw_messages = final["messages"]
             except Exception:
                 raise e
+        finally:
+            self._current_callback = None
 
         # 提取最终回复
         response = ""
@@ -546,6 +548,41 @@ class AgentLoop:
 
         self._add_history(user_input, response)
         return response
+
+    def _execute_tool(self, tool_name, tool_args, tool_map, callback):
+        """Execute a tool, compress output, and emit result event.
+
+        Returns:
+            Tuple of (result_text, duration_ms, success)
+        """
+        t_start = time.time()
+        if tool_name in tool_map:
+            try:
+                result = tool_map[tool_name].invoke(tool_args)
+            except Exception as e:
+                result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
+        else:
+            result = f"[错误] 未知工具: {tool_name}"
+        t_duration = int((time.time() - t_start) * 1000)
+
+        # 智能压缩
+        compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
+        result = compressed.content
+        if compressed.strategy != "none":
+            _emit(callback, {
+                "type": "warning",
+                "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
+            })
+
+        success = not result.startswith("[错误]") and not result.startswith("[工具执行错误]")
+        _emit(callback, {
+            "type": "tool_result",
+            "tool": tool_name,
+            "duration_ms": t_duration,
+            "success": success,
+        })
+
+        return result, t_duration, success
 
     def _run_manual(
         self, user_input: str, turn: AgentTurn, callback: Optional[Callable]
@@ -630,32 +667,8 @@ class AgentLoop:
                             from keeper.agent.confirm import confirm_action
                             if confirm_action(tool_name, tool_args, level.value):
                                 # 用户确认，正常执行工具
-                                t_start = time.time()
-                                if tool_name in tool_map:
-                                    try:
-                                        result = tool_map[tool_name].invoke(tool_args)
-                                    except Exception as e:
-                                        result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
-                                else:
-                                    result = f"[错误] 未知工具: {tool_name}"
-                                t_duration = int((time.time() - t_start) * 1000)
-
-                                # 智能压缩
-                                compressed = output_compressor.compress(
-                                    tool_name, result, max_len=self.MAX_OUTPUT_LEN)
-                                result = compressed.content
-                                if compressed.strategy != "none":
-                                    _emit(callback, {
-                                        "type": "warning",
-                                        "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
-                                    })
-
-                                _emit(callback, {
-                                    "type": "tool_result",
-                                    "tool": tool_name,
-                                    "duration_ms": t_duration,
-                                    "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
-                                })
+                                result, t_duration, _ = self._execute_tool(
+                                    tool_name, tool_args, tool_map, callback)
                             else:
                                 # 用户拒绝
                                 result = f"[用户拒绝] 操作已取消: {tool_name}"
@@ -667,32 +680,9 @@ class AgentLoop:
                                     "success": False,
                                 })
                         else:
-                            # 执行工具
-                            t_start = time.time()
-                            if tool_name in tool_map:
-                                try:
-                                    result = tool_map[tool_name].invoke(tool_args)
-                                except Exception as e:
-                                    result = f"[工具执行错误] {type(e).__name__}: {str(e)}"
-                            else:
-                                result = f"[错误] 未知工具: {tool_name}"
-                            t_duration = int((time.time() - t_start) * 1000)
-
-                            # 智能压缩（替代硬截断）
-                            compressed = output_compressor.compress(tool_name, result, max_len=self.MAX_OUTPUT_LEN)
-                            result = compressed.content
-                            if compressed.strategy != "none":
-                                _emit(callback, {
-                                    "type": "warning",
-                                    "message": f"输出已压缩 ({compressed.strategy}): {compressed.original_len} → {compressed.compressed_len} 字符",
-                                })
-
-                            _emit(callback, {
-                                "type": "tool_result",
-                                "tool": tool_name,
-                                "duration_ms": t_duration,
-                                "success": not result.startswith("[错误]") and not result.startswith("[工具执行错误]"),
-                            })
+                            # 自动放行的工具
+                            result, t_duration, _ = self._execute_tool(
+                                tool_name, tool_args, tool_map, callback)
 
                     # 记录
                     turn.tool_calls.append(ToolCall(

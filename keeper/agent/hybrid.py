@@ -12,7 +12,10 @@
 └──────────────────────────────────────────────────────────────┘
 """
 import time
+import logging
 from typing import Optional, Callable
+
+logger = logging.getLogger(__name__)
 
 from keeper.config import AppConfig
 from keeper.core.audit import AuditLogger
@@ -163,7 +166,8 @@ class HybridAgent:
                             question = parsed.questions[0]
                             selected = select_option(question.question, list(question.options))
                             response = response.rstrip() + f"\n[用户选择] {selected}"
-                        except Exception:
+                        except (EOFError, KeyboardInterrupt, OSError, ValueError) as e:
+                            logger.debug("select_option failed, falling back to text display: %s", e)
                             formatted = ask_user_parser.format_for_display(parsed)
                             response = response.rstrip() + "\n" + formatted
                     else:
