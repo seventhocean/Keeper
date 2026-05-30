@@ -26,7 +26,7 @@ class ToolMeta:
     is_read_only: bool = False
     is_concurrency_safe: bool = False
     timeout_sec: int = 30
-    tags: list = ()  # 用途标签：server / log / network / k8s / docker / security / runbook / general
+    tags: tuple = ()  # 用途标签：server / log / network / k8s / docker / security / runbook / general
 
 
 # 工具元数据注册表（按工具名索引）

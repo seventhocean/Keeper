@@ -4,7 +4,7 @@
 
 用自然语言管理服务器：「检查 K8s 集群」「分析 CPU 为什么高」「磁盘满了帮我清理」。Keeper 通过 LLM 自主分析、选择工具、多步执行，像资深运维工程师一样工作。
 
-**版本：** v1.1.0 | 测试：376 passed | 工具：25+ 个（支持动态扩展）
+**版本：** v1.1.0 | 工具：28+ 个（支持动态扩展）
 
 ---
 
@@ -69,7 +69,7 @@ Keeper 采用 **Hybrid Agent** 架构：Fast Path（正则匹配简单指令）+
 
 ### 核心能力
 
-Agent 拥有 24+ 个工具（支持用户动态安装 Runbook），LLM 自主选择调用：
+Agent 拥有 28+ 个工具（支持用户动态安装 Runbook），LLM 自主选择调用：
 
 | 类别 | 工具 | 说明 |
 |------|------|------|
@@ -195,7 +195,7 @@ keeper🤖> 我有一个数据库巡检 SOP，帮我注册
 | `/history` | 查看上次执行详情 |
 | `/tools` | 列出所有可用工具 |
 | `/mode` | 查看当前运行模式 |
-| `/memory` | 查看历史操作记忆 |
+| `/memory` | 查看历史操作记忆（支持 --host/--cat/--search/--date 筛选） |
 | `/status` | 查看 Agent 运行状态 |
 | `/plugins` | 查看已安装插件 |
 
@@ -365,7 +365,7 @@ keeper/
 
 ```bash
 # 测试
-pytest tests/ -v              # 314 tests (unit)
+pytest tests/ -v              # 单元测试
 pytest tests/ --cov=keeper     # 覆盖率报告
 
 # 代码检查
