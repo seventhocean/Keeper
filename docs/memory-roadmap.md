@@ -1,6 +1,6 @@
 # Keeper 统一运维记忆 — 规划文档
 
-> 创建: 2026-05-16 | 更新: 2026-05-16 (v1.1.0)
+> 创建: 2026-05-16 | 更新: 2026-05-31 (v1.1.1)
 
 ---
 
@@ -28,7 +28,7 @@
 | `Comparator` (comparator.py) | 巡检历史对比 | ✅ 已实现，未自动触发 |
 | `CapacityPredictor` (capacity.py) | 容量预测 | ✅ 已实现，未自动触发 |
 
-## 当前状态（v1.1.0）
+## 当前状态（v1.1.1）
 
 - ✅ Agent 执行完自动保存记忆到磁盘
 - ✅ 新会话加载历史记忆
@@ -37,6 +37,8 @@
 - ✅ **`/memory` 命令支持 `--host`/`--cat`/`--search`/`--date` 筛选**（v1.1.0 新增）
 - ✅ **TodoWrite 任务追踪**（v1.1.0 新增）
 - ✅ InspectionHistory 自动采集巡检数据（inspect_server 执行后自动写入 SQLite）
+- ✅ **交互式终端确认**（v1.1.1 新增）：WRITE/DESTRUCTIVE 工具执行前弹 RadioList 确认框
+- ✅ **会话缓存 Always Allow**（v1.1.1 新增）：同工具确认一次后不再重复打扰
 
 ## 待实现
 
@@ -60,7 +62,7 @@
 ## 目标体验
 
 ```
-keeper🤖> 你好，Keeper v1.1.0
+keeper🤖> 你好，Keeper v1.1.1
 
   📋 上次工作回顾 (最近3次):
     • 5/16 排查 CPU 异常 → nginx worker_connections 不足，已修复
