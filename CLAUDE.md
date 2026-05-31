@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **Keeper** - 智能运维 Agent，类似 Claude Code 的对话式 CLI 工具
 
-**版本：** v1.1.0 (2026-05-16)
+**版本：** v1.1.1 (2026-05-31)
 
 ## 快速命令
 
@@ -200,7 +200,7 @@ pytest tests/ -m "not requires_llm"   # 跳过需要 LLM API Key 的测试
 
 ### 测试覆盖率
 
-**全局覆盖率**: 33%（644+ 测试用例，1 个预存的集成测试失败）
+**全局覆盖率**: 33%（645 测试用例，1 个预存的集成测试失败）
 
 **排除不可测系统层后的有效覆盖率**: 87%（2756 行可测代码中覆盖 2387 行）
 
@@ -238,7 +238,7 @@ pytest tests/ -m "not requires_llm"   # 跳过需要 LLM API Key 的测试
 | `keeper/runbook/models.py` | 100% |
 | `keeper/nlu/base.py` | 95% |
 
-测试文件：17 个，覆盖 agent 引擎、安全控制、确认交互、配置管理、工具模块、报告导出、容量预测等核心逻辑。
+测试文件：24 个，覆盖 agent 引擎（hybrid/loop/planner/state/compressor）、安全控制、确认交互（Claude Code 风格 RadioList 三级 API）、配置管理、工具模块、报告导出、容量预测等核心逻辑。
 
 ### CLI 入口
 

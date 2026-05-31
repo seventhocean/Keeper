@@ -4,7 +4,7 @@
 
 用自然语言管理服务器：「检查 K8s 集群」「分析 CPU 为什么高」「磁盘满了帮我清理」。Keeper 通过 LLM 自主分析、选择工具、多步执行，像资深运维工程师一样工作。
 
-**版本：** v1.1.0 | 工具：28+ 个（支持动态扩展）
+**版本：** v1.1.1 | 工具：28+ 个（支持动态扩展）
 
 ---
 
@@ -82,7 +82,7 @@ Agent 拥有 28+ 个工具（支持用户动态安装 Runbook），LLM 自主选
 | 运维 | manage_systemd_service, execute_shell_command | 服务管理、安全 Shell |
 | SSH | inspect_remote_server | SSH 远程巡检 |
 | 分析 | compare_inspection, predict_capacity | 巡检对比、容量预测 |
-| Runbook | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate, install_runbook | 标准化运维流程 + 动态安装 |
+| Runbook | runbook_disk_cleanup, runbook_service_restart, runbook_log_rotate, install_runbook | 3 个内置 SOP + 动态安装（YAML/Markdown → 工具） |
 | 自由 | run_bash, read_file, write_file, list_directory, search_files | 通用操作 |
 
 ### 流式执行
@@ -366,7 +366,7 @@ keeper/
 
 ```bash
 # 测试
-pytest tests/ -v              # 全部测试（644+ 用例）
+pytest tests/ -v              # 全部测试（645 用例）
 pytest tests/ --cov=keeper     # 覆盖率报告
 pytest tests/ -m "not integration"  # 仅单元测试
 
@@ -380,8 +380,8 @@ flake8 keeper/ --max-line-length=120
 |------|------|
 | 全局覆盖率 | 33% |
 | **有效覆盖率**（排除不可测系统层） | **87%** |
-| 测试用例数 | 644+ |
-| 测试文件数 | 17 |
+| 测试用例数 | 645 |
+| 测试文件数 | 24 |
 
 > **关于「有效覆盖率」**: 全局 33% 偏低是因为约 6500 行代码属于 CLI 入口（Click/prompt_toolkit）、K8s SDK、Docker SDK、系统信号、subprocess 调用等**进程级框架或外部系统依赖**，需要通过依赖注入重构才能进行单元测试。排除这些后，纯逻辑模块的覆盖率为 87%。
 
