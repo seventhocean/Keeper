@@ -42,57 +42,57 @@ class TestConfirmActionNonTTY:
 class TestConfirmActionTTY:
     """TTY 环境下 confirm_action 行为测试"""
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_allows(self, mock_stdin, mock_radiolist):
+    def test_user_allows(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "allow"
+        mock_blocking.return_value = "allow"
         reset_always_allowed()
         result = confirm_action("k8s_scale_deployment", {"replicas": 3}, "write")
         assert result is True
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_denies(self, mock_stdin, mock_radiolist):
+    def test_user_denies(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "deny"
+        mock_blocking.return_value = "deny"
         reset_always_allowed()
         result = confirm_action("docker_prune", {}, "destructive")
         assert result is False
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_always_allow(self, mock_stdin, mock_radiolist):
+    def test_user_always_allow(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "always"
+        mock_blocking.return_value = "always"
         reset_always_allowed()
         result = confirm_action("manage_systemd_service", {"action": "restart"}, "write")
         assert result is True
         assert "manage_systemd_service" in _always_allowed_tools
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_always_allow_cache(self, mock_stdin, mock_radiolist):
+    def test_always_allow_cache(self, mock_stdin, mock_blocking):
         """始终允许后不再弹出确认"""
         mock_stdin.isatty.return_value = True
         reset_always_allowed()
         _always_allowed_tools.add("my_tool")
-        # 不应调用 _run_radiolist
+        # 不应调用 _blocking_select
         result = confirm_action("my_tool", {}, "write")
         assert result is True
-        mock_radiolist.assert_not_called()
+        mock_blocking.assert_not_called()
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_escape_returns_false(self, mock_stdin, mock_radiolist):
-        """Esc（空字符串）视为拒绝"""
+    def test_escape_returns_false(self, mock_stdin, mock_blocking):
+        """空字符串视为拒绝"""
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = ""
+        mock_blocking.return_value = ""
         reset_always_allowed()
         result = confirm_action("some_tool", {}, "write")
         assert result is False
@@ -117,21 +117,21 @@ class TestSelectOptionNonTTY:
 class TestSelectOptionTTY:
     """TTY 环境下 select_option 行为测试"""
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_selects(self, mock_stdin, mock_radiolist):
+    def test_user_selects(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "查看日志"
+        mock_blocking.return_value = "查看日志"
         result = select_option("选择操作:", ["重启服务", "查看日志", "忽略"])
         assert result == "查看日志"
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_escape_returns_first(self, mock_stdin, mock_radiolist):
+    def test_escape_returns_first(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = ""
+        mock_blocking.return_value = ""
         result = select_option("选择:", ["A", "B"])
         assert result == "A"
 
@@ -145,22 +145,22 @@ class TestSelectOrInput:
         result = select_or_input("选择:", ["A", "B"])
         assert result == "A"
 
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_selects_preset(self, mock_stdin, mock_radiolist):
+    def test_user_selects_preset(self, mock_stdin, mock_blocking):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "重启服务"
+        mock_blocking.return_value = "重启服务"
         result = select_or_input("选择操作:", ["重启服务", "查看日志"])
         assert result == "重启服务"
 
     @patch("keeper.agent.confirm._text_input", return_value="自定义方案")
-    @patch("keeper.agent.confirm._run_radiolist")
+    @patch("keeper.agent.confirm._blocking_select")
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
     @patch("sys.stdin")
-    def test_user_selects_other(self, mock_stdin, mock_radiolist, mock_text_input):
+    def test_user_selects_other(self, mock_stdin, mock_blocking, mock_text_input):
         mock_stdin.isatty.return_value = True
-        mock_radiolist.return_value = "输入其他..."
+        mock_blocking.return_value = "输入其他..."
         result = select_or_input("选择操作:", ["重启服务", "查看日志"])
         assert result == "自定义方案"
 
@@ -249,19 +249,18 @@ class TestSafetyIcon:
 
 
 class TestRunRadiolist:
-    """_run_radiolist 基础测试"""
+    """_blocking_select 基础测试"""
 
     @patch("keeper.agent.confirm.PROMPT_TOOLKIT_AVAILABLE", True)
-    def test_basic_radiolist(self):
-        from keeper.agent.confirm import _run_radiolist
-        # This will try to create an Application, which may fail in test env
-        # The test verifies the function doesn't crash with valid inputs
+    def test_basic_select(self):
+        from keeper.agent.confirm import _blocking_select
+        # In test env without real TTY, input() may fail
+        # Just verify the function exists and doesn't crash
         try:
-            result = _run_radiolist("确认操作", [("allow", "允许执行"), ("deny", "拒绝")], default="allow")
+            result = _blocking_select("确认操作", [("allow", "允许执行"), ("deny", "拒绝")], default="allow")
             assert isinstance(result, str)
         except Exception:
-            # In test environments without a real TTY, prompt_toolkit may raise
-            pass
+            pass  # may fail without real TTY
 
 
 class TestFallbackFunctions:
@@ -325,15 +324,14 @@ class TestTextInput:
 
 
 class TestRunRadiolistFallback:
-    """_run_radiolist 在 prompt_toolkit 不可用时的降级"""
+    """_blocking_select 在 prompt_toolkit 不可用时的降级"""
 
     def test_radiolist_fallback_delegates_to_fallback_select(self):
-        """非 TTY 时 _run_radiolist 委托给 _fallback_select"""
-        from keeper.agent.confirm import _fallback_select, _run_radiolist
+        """非 TTY 时 _blocking_select 使用 input()"""
+        from keeper.agent.confirm import _fallback_select, _blocking_select
         import keeper.agent.confirm as confirm_module
 
-        # _run_radiolist without prompt_toolkit → _fallback_select
-        # We verify _fallback_select behavior directly (the delegate)
+        # _blocking_select uses input() directly, verify behavior
         with patch("builtins.input", return_value="1"):
             result = _fallback_select("选择:", ["A选项", "B选项"])
             assert result == "A选项"
